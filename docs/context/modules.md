@@ -4,7 +4,7 @@
 
 | Module | Path | Files | Responsibility |
 |---|---|---|---|
-| bot | `src/bot/` | 5 + 6 commands | Telegram bot handler, commands, state, transport |
+| bot | `src/bot/` | 5 + 5 commands | Telegram bot handler, commands, state, transport |
 | pi | `src/pi/` | 4 | Pi agent session management (trait + CLI impl + registry) |
 | install | `src/install/` | 4 | Service installation for launchd/systemd, status detection |
 | voice | `src/voice/` | 1 | Voice message transcription (3 backends) |
@@ -25,16 +25,16 @@
 | File | Lines | Role |
 |---|---|---|
 | `mod.rs` | ~65 | `pub async fn run(config)` — builds teloxide Dispatcher, registers command filter chain |
-| `handler.rs` | ~172 | Message endpoints: `text_handler`, `voice_handler`, `photo_handler`, `abort_handler`, `retry_handler`, `process_prompt` |
+| `handler.rs` | ~467 | Message endpoints: `text_handler`, `voice_handler`, `photo_handler`, `abort_handler`, `retry_handler`, `process_prompt` (streaming) |
 | `state.rs` | ~107 | `BotChatState` — per-chat status tracking (Idle/Processing/Switching/Transcribing), last prompt storage |
-| `transport.rs` | ~82 | `send_text`, `edit_text`, `send_typing`, `split_text` — Telegram API wrappers with 4096-char chunking |
+| `transport.rs` | ~82 | `send_text`, `edit_text`, `send_typing` — Telegram API wrappers with 4096-char chunking |
 | `keyboard.rs` | ~71 | `paginate_keyboard` — generic paginated inline keyboard builder |
 | `commands/mod.rs` | ~113 | `Command` enum (BotCommands derive), `dispatch()` router, `register_menu()`, `send_welcome()` |
-| `commands/basic.rs` | ~41 | `cmd_start`, `cmd_help` — **unused** (dead code; dispatch uses inline `send_welcome`) |
 | `commands/context.rs` | ~33 | `/context` — shows session stats (tokens, messages) |
 | `commands/model.rs` | ~30 | `/model` — shows current AI model |
 | `commands/sessions.rs` | ~83 | `/new` (destroy + recreate), `/sessions` (list), `/handback` (resume-in-terminal instructions) |
 | `commands/tree.rs` | ~24 | `/tree`, `/branch`, `/label` — all stubs |
+| `commands/basic.rs` | ~41 | `cmd_start`, `cmd_help` — **not compiled** (file exists but `pub mod basic` is not declared in `commands/mod.rs`) |
 
 ### Public API
 
@@ -76,7 +76,7 @@ pub async fn dispatch(bot, msg, cmd, state) -> ResponseResult<()>
 
 ### Internal Dependencies
 
-- `handler.rs` → `state`, `transport`, `config`, `format`, `pi::registry`
+- `handler.rs` → `state`, `transport`, `config`, `format`, `pi::registry`, `pi::session::PiEvent`
 - `state.rs` → `pi::session::SessionContext`
 - `commands/*.rs` → `handler::HandlerState`, `state`, `pi::registry`
 - `transport.rs`, `keyboard.rs` → teloxide only (no internal deps)
@@ -85,7 +85,8 @@ pub async fn dispatch(bot, msg, cmd, state) -> ResponseResult<()>
 
 - **dptree filter chain**: command → voice → photo → text (priority order)
 - **Busy guard**: every handler checks `state.is_busy(key)` before processing
-- **Optimistic edit**: send "🤔 Thinking...", then edit with actual response
+- **Optimistic edit**: send "🤔 Thinking...", then stream-edit with actual response
+- **Streaming prompt**: `process_prompt` uses `prompt_streaming` + `mpsc::channel<PiEvent>` to receive text deltas, tool events, and turn-end; a spawned task applies debounced edits (1.5s interval) to the Telegram message; tool call start/end shows inline `🔧 <i>tool_name</i>...` indicators
 
 ---
 
@@ -96,9 +97,9 @@ pub async fn dispatch(bot, msg, cmd, state) -> ResponseResult<()>
 | File | Lines | Role |
 |---|---|---|
 | `mod.rs` | 3 | Re-exports |
-| `session.rs` | ~86 | `PiSession` trait + data types (`SessionContext`, `SessionInfo`, `PromptResponse`, `ToolCallRecord`, `SessionStats`) |
+| `session.rs` | ~117 | `PiSession` trait + data types (`SessionContext`, `SessionInfo`, `PromptResponse`, `ToolCallRecord`, `SessionStats`, `PiEvent`) |
 | `registry.rs` | ~90 | `SessionRegistry` — HashMap-based session store, `get_or_create` with double-checked locking |
-| `cli_session.rs` | ~172 | `CliSession` — `PiSession` impl backed by `pi` CLI subprocess |
+| `cli_session.rs` | ~489 | `CliSession` — `PiSession` impl backed by `pi --mode json --print` CLI subprocess with streaming JSON event parsing |
 
 ### Public API
 
@@ -110,12 +111,24 @@ pub struct PromptResponse { text: String, tool_calls: Vec<ToolCallRecord> }
 pub struct ToolCallRecord { tool_name, tool_call_id, output, is_error }
 pub struct SessionStats { session_id, total_messages, tokens_in, tokens_out, cost }
 
+pub enum PiEvent {
+    ThinkingDelta { delta },
+    TextDelta { delta },
+    ToolStart { tool_name, tool_call_id },
+    ToolOutput { tool_call_id, output, is_error },
+    ToolEnd { tool_call_id },
+    Usage { tokens_in, tokens_out, cost, model },
+    TurnEnd { text },
+    Error { message },
+}
+
 #[async_trait]
 pub trait PiSession: Send + Sync {
     fn info(&self) -> SessionInfo;
     async fn stats(&self) -> SessionStats;
     async fn prompt(&self, text: &str) -> Result<PromptResponse>;
     async fn prompt_with_images(&self, text: &str, images: &[PathBuf]) -> Result<PromptResponse>;
+    async fn prompt_streaming(&self, text: &str, tx: mpsc::Sender<PiEvent>) -> Result<PromptResponse>;
     async fn abort(&self) -> Result<()>;
     async fn set_model(&self, model: &str) -> Result<()>;
     async fn dispose(&self) -> Result<()>;
@@ -136,8 +149,11 @@ pub fn pi_cli_available() -> bool  // which::which("pi")
 ### Key Details
 
 - **Bootstrap path**: `PI_SESSION_PATH` from config is consumed by the first `get_or_create` call (`Option::take`). All subsequent chats get fresh sessions.
-- **Prompt mechanism**: spawns `pi --prompt <text>` with `PI_SESSION_PATH` and optional `PI_MODEL` env vars. Stdout → `PromptResponse.text`. Stderr on non-zero exit → `TelePiError::PiProcess`.
+- **Streaming JSON protocol**: `CliSession` spawns `pi --mode json --print <text>` and reads stdout line-by-line. Each line is parsed as a `JsonEvent` (tagged enum with serde). `MessageUpdate` events carry `AssistantMessageEvent` variants (`ThinkingDelta`, `TextDelta`, `ToolStart`, `ToolEnd`, etc.) which are translated to `PiEvent`s and sent through the `mpsc::Sender`.
+- **JSON event types** (internal to `cli_session.rs`): `JsonEvent` (Session, AgentStart, AgentEnd, TurnStart, TurnEnd, MessageStart, MessageEnd, MessageUpdate, Unknown), `AssistantMessageEvent` (ThinkingStart/Delta/End, TextStart/Delta/End, ToolStart/Update/End, Unknown), `JsonMessage`, `JsonUsage`, `JsonCost`, `ToolCallInfo`.
+- **Abort support**: `CliSession` stores `running_child: Arc<Mutex<Option<Child>>>`. `abort()` sends `SIGTERM` to the child PID (unix only).
 - **Session storage**: data dir per platform (`dirs::data_dir()/telepi/sessions/<uuid>`), or bootstrap path.
+- **Not yet implemented**: `stats()` returns zeros (TODO: parse session JSONL), `set_model()` is a no-op (TODO: persist model selection), `prompt_with_images` uses `@file` CLI syntax.
 
 ---
 
@@ -196,7 +212,7 @@ pub async fn transcribe(file_path: &Path) -> Result<TranscriptionResult>
 
 - **Priority order**: Parakeet (macOS Apple Silicon) > Sherpa-ONNX (cross-platform) > OpenAI Whisper (cloud)
 - **Only OpenAI is implemented**. Parakeet and Sherpa-ONNX return `Err(not yet implemented)`.
-- **Not wired up**: `voice_handler` in handler.rs has a TODO to call this module.
+- **Wired up**: `voice_handler` in `bot/handler.rs` calls `crate::voice::transcribe` for voice/audio messages, then feeds the transcript as a prompt.
 
 ---
 
