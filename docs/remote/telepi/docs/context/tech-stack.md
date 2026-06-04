@@ -23,6 +23,8 @@ Source: `tsconfig.json`
 | `esModuleInterop` | true |
 | `skipLibCheck` | true |
 | `rootDir` / `outDir` | `src` / `dist` |
+| `forceConsistentCasingInFileNames` | true |
+| `types` | `["node"]` |
 
 ## Production Dependencies
 
@@ -126,6 +128,8 @@ Source: `Dockerfile`, `docker-compose.yml`
 | Linux | systemd | `systemd/telepi.service` |
 
 Both services run `telepi start` (via `dist/cli.js`) with automatic restart on failure.
+
+**systemd note:** `RestartSec=5` (5-second delay before restart).
 
 ## Environment Variables
 

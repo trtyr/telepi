@@ -84,7 +84,7 @@ index.ts ──► bot.ts ──┼──► config.ts ──► paths.ts
                    errors.ts
                    format.ts
 
-install.ts ──► install/{config,extension,launchd,systemd,platform,shared,service-manager}.ts
+install.ts ──► install/{config,extension,launchd,systemd,platform,shared,service-manager,clipboard}.ts
 ```
 
 ## Data Flow
@@ -128,7 +128,7 @@ install.ts ──► install/{config,extension,launchd,systemd,platform,shared,s
 
 ```
 message:voice → downloadTelegramFile() → transcribeAudio(file)
-  → backend: parakeet-coreml | sherpa-onnx-node | openai (fallback chain)
+  → backend: parakeet | sherpa-onnx | openai (fallback chain)
   → transcript text → handleUserPrompt() → same as text flow
 ```
 

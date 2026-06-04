@@ -1,195 +1,169 @@
 # TelePi Module Reference
 
-Source modules grouped by functional area. Tables list public exports.
+TypeScript source modules grouped by functional area. All modules use factory functions with closure-based DI — no classes.
 
 ---
 
 ## Bot / Telegram Layer
 
-### `src/bot.ts` — Composition Root
+### `src/bot.ts` — Main Bot Wiring (~1316 lines)
 
-Assembles `Bot<Context>`, wires all handlers, state maps, slash commands.
-Exports: `createBot(config, sessionRegistry) → Bot<Context>`, `registerCommands(bot)`.
-Pattern: single factory closing over ~20 `Map`s for callback-keyed UI state.
-Deps: `config`, `errors`, `format`, `pi-session`, `tree`, `voice`, all `bot/*` modules.
+Composition root. Creates Grammy `Bot`, registers all command handlers, wires callback query routing, sets up the `PiSessionRegistry` and `BotChatState`, starts polling with auto-retry.
 
-### `src/bot/chat-state.ts` — Busy Tracking
+Key exports: `createBot(deps)` — factory function.
 
-`BotChatState` interface, `createBotChatState()`. Tracks
-processing/switching/transcribing per context. Deps: `pi-session` (types).
+Deps: `config`, `pi-session`, all `bot/*` submodules, `voice`, `format`, `model-scope`.
 
-### `src/bot/chat-task-runner.ts` — Serialised Prompt Tasks
-
-`ChatTaskRunner` (`tryStartPrompt`), `createChatTaskRunner(deps)`.
-Rejects overlapping prompts as "busy". Deps: `pi-session` (types).
-
-### `src/bot/telegram-transport.ts` — API Primitives
-
-`TextOptions`, `getTelegramTarget`, `safeReply`, `safeEditMessage`,
-`sendTextMessage`, `sendChatAction`, `downloadTelegramFile`. Handles 4096-char
-limits and parse-mode fallback. Deps: `grammy`, `message-rendering`, `pi-session` (types).
-
-### `src/bot/prompt-handler.ts` — Prompt Dispatch
-
-`HandleUserPrompt` type, `createPromptHandler(deps)`. Streams
-tool/text deltas to Telegram; handles extension UI dialogs.
-Deps: `config`, `errors`, `format`, `pi-session`, `telegram-ui-context`, `bot/*`.
-
-### `src/bot/prompt-inbox.ts` — File-Based Prompt Ingestion
-
-`startPromptInboxPolling(options)` → stop fn. Polls directory for `.txt` prompts
-(Pi CLI hand-off). Deps: `pi-session` (types).
-
-### `src/bot/message-rendering.ts` — Telegram HTML Rendering
+### `src/bot/chat-state.ts` — Per-Chat Busy Tracking
 
 | Export | Kind |
-|---|---|
-| `TelegramParseMode`, `RenderedText`, `RenderedChunk` | types |
-| `TELEGRAM_MESSAGE_LIMIT` (4000), `TOOL_OUTPUT_PREVIEW_LIMIT` (500) | constants |
-| `renderHelp{Plain,HTML}`, `renderSessionInfo{Plain,HTML}` | functions |
-| `renderToolStartMessage/End`, `renderFailedText`, `renderPrefixedError` | functions |
-| `buildStreamingPreview`, `splitTelegramText`, `isMessageNotModifiedError` | functions |
+|--------|------|
+| `BotChatState` | interface |
+| `createBotChatState()` | factory → `BotChatState` |
 
-Deps: `errors`, `format`, `pi-session` (types).
+Methods: `isLocallyBusy(target)`, `beginProcessing(target, prompt)`, `endProcessing(target)`, `beginSwitching(target)`, `endSwitching(target)`, `beginTranscribing(target)`, `endTranscribing(target)`, `getLastPrompt(target)`, `clearPromptMemory(target)`.
+
+Uses closure-captured `Set<string>` for state. No classes.
+
+### `src/bot/chat-task-runner.ts` — Async Task Execution
+
+| Export | Kind |
+|--------|------|
+| `ChatTaskRunner` | interface |
+| `createChatTaskRunner(deps)` | factory → `ChatTaskRunner` |
+
+Wraps prompt execution with busy-guard logic. Integrates with `BotChatState` to prevent concurrent prompts per chat.
+
+### `src/bot/prompt-handler.ts` — Prompt Flow Orchestration
+
+Handles the full prompt lifecycle: validate → mark busy → send typing → send "🤔 Thinking..." → call `PiSessionService.prompt()` → format response → edit message → mark idle.
+
+Deps: `chat-state`, `telegram-transport`, `message-rendering`, `pi-session`.
+
+### `src/bot/telegram-transport.ts` — Safe Telegram API Wrappers
+
+| Export | Kind |
+|--------|------|
+| `sendReply(ctx, text, options)` | safe reply with error handling |
+| `editMessage(ctx, messageId, text)` | edit with retry |
+| `sendTyping(ctx)` | typing indicator |
+| `downloadFile(ctx, fileId)` | download voice/photo files |
+
+Handles Telegram rate limits via `@grammyjs/auto-retry`.
+
+### `src/bot/message-rendering.ts` — HTML Formatting & Chunking
+
+| Export | Kind |
+|--------|------|
+| `renderPromptResponse(response)` | format Pi response as Telegram HTML |
+| `splitMessage(text, limit)` | split at 4096 chars, newline-aware |
+| `ContextUsageInfo` | interface |
+| `SessionStatsInfo` | interface |
 
 ### `src/bot/keyboard.ts` — Inline Keyboard Pagination
 
-`KeyboardItem`, `KEYBOARD_PAGE_SIZE` (6), `paginateKeyboard`, `appendKeyboardItems`.
-Deps: `grammy`, `callback-data`.
+| Export | Kind |
+|--------|------|
+| `KeyboardItem` | type `{ label, callbackData }` |
+| `paginateKeyboard(items, page, pageSize)` | paginated inline keyboard |
 
-### `src/bot/slash-command.ts` — Command Metadata
+### `src/bot/slash-command.ts` — Command Normalization
 
-`TELEPI_BOT_COMMANDS`, `normalizeSlashCommand`, `rewriteSlashCommandForTelegram`,
-`buildChatScopedCommands`, `getTelepiNativeCommandMenu`, `CommandPickerEntry`,
-`buildCommandPickerEntries`, `filterCommandPickerEntries`.
-Deps: `@mariozechner/pi-coding-agent`, `message-rendering`.
+| Export | Kind |
+|--------|------|
+| `NormalizedSlashCommand` | type `{ name, text }` |
+| `CommandPickerFilter` | type `"all" \| "telepi" \| "pi"` |
+| `normalizeSlashCommand(text)` | parse raw text into command structure |
 
-### `src/bot/extension-dialogs.ts` — Interactive Extension Dialogs
+### `src/bot/commands/` — Grouped Command Handlers
 
-`PendingExtensionDialog`, `ExtensionDialogManager`, `createExtensionDialogManager(deps)`.
-Manages select/confirm/input dialogs with timeout and abort.
-Deps: `grammy`, `pi-session` (types).
+| File | Commands | Notes |
+|------|----------|-------|
+| `basic.ts` | `/start`, `/help`, `/new` | Welcome, session creation |
+| `sessions.ts` | `/sessions`, `/session` | List/switch sessions |
+| `model.ts` | `/model` | Model picker with inline keyboard |
+| `tree.ts` | `/tree`, `/branch`, `/label` | Session tree navigation |
+| `context.ts` | `/context` | Context window usage |
+| `tree-callbacks.ts` | tree callback handlers | Navigation, pagination, filtering |
+| `command-picker.ts` | `/commands` picker | Paginated TelePi + Pi command browser |
 
-### `src/bot/callback-query-logging.ts` — Callback Error Logging
+### `src/bot/extension-dialogs.ts` — Telegram-Backed Extension UI
 
-`COMMAND_MENU_CALLBACK_PREFIX`, `isStaleCallbackQueryError`, `logCallbackQueryError`.
+| Export | Kind |
+|--------|------|
+| `handleSelectDialog(ctx, options)` | Telegram inline keyboard select |
+| `handleConfirmDialog(ctx, message)` | yes/no confirm |
+| `handleInputDialog(ctx, placeholder)` | wait for text input |
 
-### `src/bot/tree-callbacks.ts` — Tree Navigation Callbacks
+Allows Pi extension commands to open Telegram-native dialogs mid-execution.
 
-`PendingTreeView`, `registerTreeCallbacks(deps)`. Deps: `format`, `pi-session`, `tree`.
+### `src/bot/callback-query-logging.ts` — Stale Callback Suppression
 
-### `src/bot/command-picker.ts` — /commands Picker
-
-`PendingCommandPicker`, `createCommandPickerHandlers(deps)`. Deps: `format`, `pi-session`, `bot/*`.
-
-### `src/bot/commands/*.ts` — Command Handler Groups
-
-Each exports a single `create*CommandHandlers(deps)` factory returning a handler map.
-
-- `basic.ts` → `/start`, `/help`, `/abort`, `/retry`, `/session`
-- `context.ts` → `/context` (context window usage)
-- `model.ts` → `/model` (model picker and switching)
-- `sessions.ts` → `/sessions`, `/new`, `/handback`
-- `tree.ts` → `/tree`, `/branch`, `/label`
-
-All depend on `format`, `pi-session` (types), and `bot/message-rendering`.
+Suppresses duplicate "query too old" error logs. `STALE_CALLBACK_LOG_WINDOW_MS = 30000`.
 
 ---
 
 ## Pi Session Layer
 
-### `src/pi-session.ts` — Session Lifecycle & Registry
+### `src/pi-session.ts` — Pi SDK Session Wrapper (~1528 lines)
 
-Largest module (~1528 lines). Wraps `@mariozechner/pi-coding-agent` SDK.
-Patches bash tool (timeout 120s, self-management guard).
+Core session management. Wraps the Pi SDK's `SessionManager` and `AgentSession`.
 
 | Export | Kind |
-|---|---|
-| `PiSessionContext` | interface (`chatId`, `messageThreadId?`) |
-| `PiSessionCallbacks`, `PiSessionDiagnostic`, `PiSessionInfo` | interfaces |
-| `PiSessionSwitchResult`, `PiSessionModelOption`, `ResolvedSessionReference` | interfaces |
-| `PiSessionNewSessionOptions`, `PiSessionSwitchOptions`, `PiSessionForkOptions` | types |
-| `subscribeToSession`, `getPiSessionContextKey` | functions |
-| `PiSessionService` | class (create/getSession/isStreaming/newSession/switchSession/prompt/abort/setModel/getModels/getContextUsage/getSessionStats/resolveSessionReference/getTree/getLabels/setLabel/dispose) |
-| `PiSessionRegistry` | class (create/has/get/getInfo/getOrCreate/remove/dispose) |
+|--------|------|
+| `PiSessionContext` | interface `{ chatId, messageThreadId? }` |
+| `PiSessionInfo` | interface `{ sessionId, sessionFile?, workspace, model?, ... }` |
+| `PiSessionService` | class — per-session operations |
+| `PiSessionRegistry` | class — session store with `getOrCreate()` |
+| `PiSessionCallbacks` | interface — streaming callbacks |
+| `getPiSessionContextKey(ctx)` | string key for chat/topic |
+| `consumeBootstrapSessionPath()` | one-shot bootstrap path consumption |
 
-Deps: `@mariozechner/pi-coding-agent`, `@mariozechner/pi-agent-core`, `@mariozechner/pi-ai`, `config`, `model-scope`, `pi-session-paths`, `provider-response-notices`, `telegram-ui-context`, `tree`.
-
-### `src/model-scope.ts` — Model Glob Resolution
-
-`ScopedModelOption`, `resolveScopedModels`, `resolveInitialScopedModelSelection`.
-Resolves `enabledModels` globs with thinking-level suffixes.
-Deps: `@mariozechner/pi-coding-agent`, `@mariozechner/pi-agent-core`, `@mariozechner/pi-ai`, `minimatch`.
-
-### `src/pi-session-paths.ts` — Session Path Resolution
-
-`resolveSessionPathForRuntime`, `readSessionHeader`, `resolveWorkspacePathForRuntime`.
-Remaps host paths to Docker container paths. Deps: `paths`.
-
-### `src/telegram-ui-context.ts` — Extension UI Shim
-
-`TelegramExtensionNoticeType`, `createTelegramUIContext(options) → ExtensionUIContext`.
-Plain-text shim for Pi SDK's UI context. Deps: `@mariozechner/pi-coding-agent` (types).
-
-### `src/provider-response-notices.ts` — Provider Error Notices
-
-`ProviderResponseNoticeEvent`, `ProviderResponseNotice`, `getProviderResponseNotice`,
-`createProviderResponseNoticeExtension`. Deps: `@mariozechner/pi-coding-agent` (types), `telegram-ui-context`.
-
-### `src/tree.ts` — Session Tree Rendering
-
-`SessionTreeNodeLike`, `TreeButton`, `TreeRenderResult`, `TreeFilterMode`,
-`truncateText`, `renderTree`, `describeEntry`, `renderBranchConfirmation`, `renderLabels`.
-Deps: `@mariozechner/pi-coding-agent` (types), `callback-data`, `format`.
+Key behaviors:
+- **Bootstrap path**: `PI_SESSION_PATH` consumed by first `getOrCreate()` call, then ignored
+- **Session storage**: `~/.pi/agent/sessions/<encoded-workspace>/`
+- **Workspace switching**: re-scopes coding tools via `createCodingTools(workspace)`
+- **Self-management block**: blocks `launchctl` commands targeting `com.telepi` from inside sessions
 
 ---
 
 ## Install / Service Layer
 
-### `src/install.ts` — Setup & Status Facade
+### `src/install.ts` — Public Facade
 
-`setupTelePi → TelePiSetupResult`, `getTelePiStatus → TelePiStatus`.
-Re-exports all shared types and submodule helpers.
-Deps: `install/config`, `install/extension`, `install/launchd`, `install/platform`, `install/shared`.
+Re-exports setup and status functions. Thin orchestration layer excluded from coverage.
 
-### `src/install/shared.ts` — Shared Types & Constants (leaf)
+### `src/install/platform.ts` — Platform Detection
 
-Constants: `TELEPI_LAUNCHD_LABEL`, `TELEPI_SERVICE_NAME`, `TELEPI_EXTENSION_FILENAME`.
-Types: `PlatformIdentifier`, `TelePiInstallContext`, `ServiceStatus`, `ExtensionStatus`,
-`TelePiStatus`, `TelePiSetupOptions`, `TelePiSetupResult`, `TelePiConfigSetupValues`.
-
-### `src/install/platform.ts` — Platform Detection & Context
-
-`detectPlatform`, `resolveTelePiInstallContext`, `getServiceManager`, `getPlatformInstallHint`.
-Deps: `paths`, `install/launchd`, `install/systemd`, `install/shared`.
-
-### `src/install/service-manager.ts` — Service Manager Interface (leaf)
-
-`ServiceManager` interface (`buildUnitFile`/`writeUnitFile`/`reconcile`/`getStatus`).
-Implemented by `launchd.ts` and `systemd.ts`.
-
-### `src/install/launchd.ts` — macOS LaunchAgent
-
-`buildLaunchAgentPlist`, `getInstalledConfigStatus`, `createLaunchdManager`.
-Deps: `paths`, `install/service-manager`, `install/shared`.
-
-### `src/install/systemd.ts` — Linux systemd
-
-`buildSystemdUnit`, `writeSystemdUnit`, `createSystemdManager`.
-Deps: `install/service-manager`, `install/shared`.
+Platform detection (`darwin` → macOS, `linux` → Linux), install context resolution.
 
 ### `src/install/config.ts` — Config File Management
 
-`ensureTelePiConfig → TelePiConfigSetupResult`, `getServiceConfigSource`.
-Deps: `config`, `paths`, `install/shared`.
+Creates/updates `~/.config/telepi/config.env`. Preserves existing optional values on re-setup.
 
-### `src/install/extension.ts` — Extension Installation
+### `src/install/launchd.ts` — macOS LaunchAgent
 
-`installExtension → "symlink" | "copy"`, `getExtensionStatus → ExtensionStatus`.
+Generates plist from template, installs to `~/Library/LaunchAgents/com.telepi.plist`, manages via `launchctl`.
 
-### `src/install/clipboard.ts` — System Clipboard (leaf)
+### `src/install/systemd.ts` — Linux systemd User Service
 
-`copyToClipboard(text) → boolean`. Uses `pbcopy`/`wl-copy`/`xclip`/`xsel`.
+Generates unit file from template, installs to `~/.config/systemd/user/telepi.service`, manages via `systemctl --user`.
+
+### `src/install/service-manager.ts` — Shared Service Interface
+
+Common interface for launchd/systemd operations (install, uninstall, restart, status).
+
+### `src/install/extension.ts` — Pi Extension Install
+
+Symlinks `extensions/telepi-handoff.ts` to `~/.pi/agent/extensions/`.
+
+### `src/install/clipboard.ts` — Cross-Platform Clipboard
+
+`copyToClipboard(text)` — tries `pbcopy` (macOS), `wl-copy`, `xclip`, `xsel` (Linux).
+
+### `src/install/shared.ts` — Shared Types/Constants
+
+Common types and constants used across install modules.
 
 ---
 
@@ -197,10 +171,14 @@ Deps: `config`, `paths`, `install/shared`.
 
 ### `src/voice.ts` — Audio Transcription
 
-`TranscriptionResult`, `TranscriptionBackend`, `transcribeAudio(filePath)`,
-`getAvailableBackends`, `getVoiceBackendStatus`. Fallback chain:
-parakeet-coreml → sherpa-onnx → OpenAI Whisper. Uses ffmpeg for decoding,
-mutex guards for native engine serialisation. Deps: `install/platform`.
+| Export | Kind |
+|--------|------|
+| `TranscriptionResult` | interface `{ text, backend, durationMs }` |
+| `TranscriptionBackend` | type `"parakeet" \| "sherpa-onnx" \| "openai"` |
+| `availableBackends()` | checks which backends are available |
+| `transcribeAudio(filePath)` | tries best available backend |
+
+Fallback chain: Parakeet CoreML → Sherpa-ONNX → OpenAI Whisper. All three implemented. Downloads voice to temp dir, transcribes, deletes immediately.
 
 ---
 
@@ -208,29 +186,53 @@ mutex guards for native engine serialisation. Deps: `install/platform`.
 
 ### `src/config.ts` — Configuration Loader
 
-`TelePiConfig`, `ToolVerbosity`, `loadConfig()`, `getConfigEnvPathInfo`,
-`parseAllowedUserIds`. Deps: `paths`.
+Hand-rolled `.env` parser (no dotenv dependency). Supports `export KEY=VALUE` syntax.
 
-### `src/paths.ts` — Path Utilities (leaf)
+| Export | Kind |
+|--------|------|
+| `TelePiConfig` | interface |
+| `ToolVerbosity` | type `"all" \| "summary" \| "errors-only" \| "none"` |
+| `loadConfig()` | reads config from env → `.env` (cwd) → `~/.config/telepi/config.env` |
 
-`DOCKER_WORKSPACE_PATH`, `getHomeDirectory`, `expandHomePath`, `resolvePathFromCwd`,
-`getDefaultTelePiConfigPath`, `getDefaultSystemdUserDir`, `getDefaultLogDir`.
+### `src/errors.ts` — Error Helpers
 
-### `src/format.ts` — Markdown → Telegram HTML (leaf)
+| Export | Kind |
+|--------|------|
+| `formatError(error)` | extract message string for internal logging |
+| `toFriendlyError(error)` | user-facing error messages, strips internal prefixes |
 
-`escapeHTML(text)`, `formatTelegramHTML(markdown)`.
+No custom error classes. Plain `Error` + string matching.
 
-### `src/errors.ts` — Error Formatting (leaf)
+### `src/format.ts` — Markdown → Telegram HTML
 
-`formatError(error)`, `toFriendlyError(error)`.
+Converts markdown to Telegram HTML. Pipeline: escape HTML → extract code blocks → bold → italic → links → blockquotes → restore placeholders. Uses Unicode private-use-area characters for placeholder protection.
 
-### `src/entrypoint.ts` — ESM Entry Guard (leaf)
+### `src/tree.ts` — Session Tree Rendering
 
-`isEntrypoint(moduleUrl, argvPath?) → boolean`.
+| Export | Kind |
+|--------|------|
+| `SessionTreeNodeLike` | interface |
+| `TreeFilterMode` | type `"default" \| "user-only" \| "all-with-buttons"` |
+| `TreeRenderResult` | interface `{ text, buttons, totalEntries, ... }` |
 
-### `src/callback-data.ts` — Callback Constants (leaf)
+### `src/model-scope.ts` — Model Filtering
 
-`NOOP_PAGE_CALLBACK_DATA` = `"noop_page"`.
+| Export | Kind |
+|--------|------|
+| `ScopedModelOption` | interface `{ model, thinkingLevel? }` |
+| `getScopedModels(session)` | filter/group available models |
+
+### `src/telegram-ui-context.ts` — Extension UI Adapter
+
+Adapts Pi extension UI calls to Telegram dialogs. Bridges `select`, `confirm`, `input` to inline keyboards and message waiting.
+
+### `src/paths.ts` — Path Utilities
+
+Cross-platform path resolution. `DOCKER_WORKSPACE_PATH`, `expandHome()`, `resolveFromCwd()`, default config/service/log directories.
+
+### `src/entrypoint.ts` — ESM Entrypoint Guard
+
+`isEntrypoint(moduleUrl)` — ESM equivalent of `if (require.main === module)`.
 
 ---
 
@@ -238,9 +240,12 @@ mutex guards for native engine serialisation. Deps: `install/platform`.
 
 ### `src/index.ts` — Bot Startup
 
-`startBot()`: creates `PiSessionRegistry`, composes bot, starts polling with
-409 auto-restart (max 5 attempts), handles SIGINT/SIGTERM.
+Graceful shutdown, polling restart with backoff (5 attempts, 3s delay on 409 Conflict). Excluded from coverage.
 
-### `src/cli.ts` — CLI
+### `src/cli.ts` — CLI Commands
 
-`main(argv?)`: dispatches `start | setup | status | version | help`.
+`start`, `setup`, `status`, `version`. Uses switch/case dispatch.
+
+---
+
+*Updated from TypeScript source on 2026-06-04.*
