@@ -73,6 +73,10 @@ Voice transcription falls back through three tiers: local CoreML → local Sherp
 | `npm run build` | `tsc` | Compile TypeScript to `dist/` |
 | `npm run dev` | `tsx src/index.ts` | Development mode with live TS execution |
 | `npm start` | `node dist/index.js` | Run compiled build |
+| `npm run clean` | `rm -rf dist artifacts` | Remove build output and packaging artifacts |
+| `npm run build:clean` | `npm run clean && npm run build` | Clean build from scratch |
+| `npm run package:release` | `npm run build:clean && node scripts/package-release.mjs` | Build + produce distributable archive |
+| `npm run ci:release` | `npm test && npm run package:release` | Full CI gate: test then package |
 | `npm test` | `vitest run` | Run test suite once |
 | `npm run test:coverage` | `vitest run --coverage` | Tests with V8 coverage |
 

@@ -43,7 +43,7 @@ TelePi is a **Telegram bridge** for the Pi coding agent (`@mariozechner/pi-codin
 | **Entrypoints** | Boot & CLI dispatch | `src/index.ts`, `src/cli.ts`, `src/entrypoint.ts` |
 | **Config** | Env loading, workspace resolution | `src/config.ts`, `src/paths.ts` |
 | **Bot** | grammY bot factory, dispatcher, command wiring | `src/bot.ts` |
-| **Bot Submodules** | Prompt flow, transport, state, rendering | `src/bot/*.ts` (12 files) |
+| **Bot Submodules** | Prompt flow, transport, state, rendering | `src/bot/*.ts` (14 files) |
 | **Session** | Per-chat Pi agent lifecycle | `src/pi-session.ts`, `src/pi-session-paths.ts` |
 | **Model** | Model scoping, selection, thinking levels | `src/model-scope.ts` |
 | **Voice** | Audio transcription (parakeet / sherpa / openai) | `src/voice.ts` |
@@ -77,12 +77,14 @@ index.ts ──► bot.ts ──┼──► config.ts ──► paths.ts
               │            ├── extension-dialogs.ts
               │            ├── prompt-inbox.ts
               │            ├── tree-callbacks.ts
+              │            ├── callback-query-logging.ts
               │            └── commands/{basic,sessions,context,model,tree}.ts
               │
               └──► telegram-ui-context.ts
                    provider-response-notices.ts
                    errors.ts
                    format.ts
+                   callback-data.ts
 
 install.ts ──► install/{config,extension,launchd,systemd,platform,shared,service-manager,clipboard}.ts
 ```
@@ -153,7 +155,7 @@ Filesystem polling (TELEPI_PROMPT_INBOX_DIR)
 
 ### Per-Chat Session Isolation
 
-Sessions are keyed by `chatId::messageThreadId` (see `getPiSessionContextKey()` in `src/pi-session.ts:1230`). Each Telegram chat (and topic thread) gets its own `PiSessionService` wrapping a separate `AgentSessionRuntime`. This prevents cross-chat state contamination.
+Sessions are keyed by `chatId::messageThreadId` (see `getPiSessionContextKey()` in `src/pi-session.ts:1229`). Each Telegram chat (and topic thread) gets its own `PiSessionService` wrapping a separate `AgentSessionRuntime`. This prevents cross-chat state contamination.
 
 ### Bootstrap Session Path
 
@@ -180,7 +182,7 @@ The `install/` subdirectory abstracts macOS (launchd via `launchd.ts`) and Linux
 Config path resolution (`src/config.ts:65`, `getConfigEnvPathInfo()`):
 1. `TELEPI_CONFIG` env (explicit)
 2. `.env` in cwd
-3. `~/.config/telepi/.env` (default)
+3. `~/.config/telepi/config.env` (default)
 
 Workspace resolution (`src/config.ts:112`):
 1. Docker: `/workspace`
@@ -211,7 +213,7 @@ Long-polling restarts on HTTP 409 Conflict (another bot instance) up to 5 attemp
 | File | Purpose | How It Starts |
 |------|---------|---------------|
 | `src/index.ts` | Bot process | `node dist/index.ts` or `npm start` |
-| `src/cli.ts` | CLI (`telepi start/setup/status/version`) | `telepi` command |
+| `src/cli.ts` | CLI (`telepi start/setup/status/version/help`) | `telepi` command |
 | `src/entrypoint.ts` | ESM entrypoint detection | Used by index.ts and cli.ts |
 
 ## Start Here

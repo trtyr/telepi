@@ -1,257 +1,170 @@
-# TelePi — Build, Test & Deploy Reference
+# TelePi Deploy Reference
 
-## Prerequisites
-
-- Node.js >= 20 (Node 22 recommended)
-- npm
-- Docker (optional, for containerized deployment)
-- macOS with launchd, or Linux with systemd (for service installation)
-
-## Environment Variables
-
-Copy `.env.example` and fill in the required values:
-
-```bash
-cp .env.example .env
-```
-
-| Variable | Required | Description |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
-| `TELEGRAM_ALLOWED_USER_IDS` | Yes | Comma-separated Telegram user IDs allowed to use the bot |
-| `TELEPI_WORKSPACE` | No | Absolute path to default project workspace for new sessions |
-| `TOOL_VERBOSITY` | No | `all` / `summary` / `errors-only` / `none` (default: `summary`) |
-| `TELEPI_PROMPT_INBOX_DIR` | No | Directory to poll for `.txt` prompt files |
-| `TELEPI_PROMPT_INBOX_INTERVAL_MS` | No | Polling interval in ms (default: `60000`) |
-| `OPENAI_API_KEY` | No | Enables cloud voice transcription via OpenAI Whisper (~$0.006/min) |
-| `SHERPA_ONNX_MODEL_DIR` | No | Path to Sherpa-ONNX model for local offline transcription (Intel Macs) |
-| `SHERPA_ONNX_NUM_THREADS` | No | Thread count for Sherpa-ONNX (default: `2`) |
-| `PI_SESSION_PATH` | No | Open a specific Pi session file (usually injected by `/handoff`) |
-| `PI_MODEL` | No | Override model, e.g. `anthropic/claude-sonnet-4-5` |
-
-## Local Development
+## Build
 
 ```bash
 # Install dependencies
 npm install
 
-# Run in dev mode (auto-reload with tsx)
-npm run dev
-
-# Run built version
-npm run build
-npm start
-```
-
-## Build
-
-```bash
-# Standard build (TypeScript → dist/)
+# Compile TypeScript to dist/
 npm run build
 
 # Clean build
-npm run build:clean    # equivalent to: rm -rf dist artifacts && tsc
-
-# Clean only
-npm run clean
+npm run build:clean    # rm -rf dist artifacts && tsc
 ```
 
-The compiled output goes to `dist/`. The CLI entrypoint is `dist/cli.js`.
+Requirements: Node.js ≥ 20, npm.
 
-## Testing
+## Run
 
 ```bash
-# Run tests once
-npm test
+# Development (tsx, no build step)
+npm run dev
 
-# Run tests with coverage report (enforced: 85% lines/functions/statements, 75% branches)
-npm run test:coverage
+# Production (after build)
+npm start              # node dist/index.js
+
+# Or via global CLI
+npm install -g @futurelab-studio/telepi
+telepi start
 ```
 
-Tests use Vitest with `globals: true`. Test files live in `test/**/*.test.ts`.
-
-## Docker
-
-### Build and run
+## Test
 
 ```bash
-# Build image and start
-docker compose up --build
+# Run all tests
+npm test               # vitest run
 
-# Run in background
-docker compose up -d --build
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
+# With coverage
+npm run test:coverage  # vitest run --coverage
 ```
 
-### What `docker-compose.yml` does
+Framework: Vitest ^3.2.4, globals enabled, pattern `test/**/*.test.ts`.
 
-- Loads env from `.env` via `env_file`
-- Mounts `~/.pi/agent/auth.json` and `settings.json` **read-only**
-- Mounts `~/.pi/agent/sessions` **read-write** (session persistence)
-- Mounts `./workspace` as `/workspace` **read-write** (agent workspace)
-- Drops all Linux capabilities, enforces no-new-privileges
-- Limits: 2 GB memory, 2 CPUs
-- Restarts unless manually stopped
+Coverage thresholds: 85% lines/functions/statements, 75% branches. Excludes `src/index.ts` and `src/install.ts`.
 
-### The Dockerfile
+## Environment Variables
 
-- Base: `node:22-alpine`
-- Installs git and bash
-- Runs `npm ci` (or `npm install` if no lockfile), then `npm run build`
-- Creates non-root `telepi` user (UID 1001)
-- Sets up writable npm global prefix so the agent can install extensions at runtime
-- Entrypoint: `node dist/index.js`
+Config resolution: `TELEPI_CONFIG` env → `.env` in cwd → `~/.config/telepi/config.env`.
 
-## macOS Service (launchd)
+### Required
 
-### Automatic setup via CLI
+| Variable | Description |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token from @BotFather |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric Telegram user IDs |
+
+### Optional
+
+| Variable | Default | Description |
+|---|---|---|
+| `TELEPI_WORKSPACE` | `process.cwd()` | Working directory for new sessions |
+| `TOOL_VERBOSITY` | `summary` | `all` / `summary` / `errors-only` / `none` |
+| `TELEPI_PROMPT_INBOX_DIR` | — | Directory to poll for `.txt` prompt files |
+| `TELEPI_PROMPT_INBOX_INTERVAL_MS` | `60000` | Poll interval (ms) |
+| `OPENAI_API_KEY` | — | Enables cloud voice transcription (Whisper) |
+| `SHERPA_ONNX_MODEL_DIR` | — | Path to Sherpa-ONNX model for local transcription |
+| `SHERPA_ONNX_NUM_THREADS` | `2` | Thread count for Sherpa-ONNX |
+| `PI_SESSION_PATH` | — | Specific Pi session file for hand-off |
+| `PI_MODEL` | — | Override Pi agent model |
+| `TELEPI_HANDOFF_MODE` | `auto` | `auto` / `direct` / `launchd` / `systemd` |
+
+## Service Installation
+
+### macOS (launchd)
+
+Installed via `telepi setup`. Plist template in `launchd/com.telepi.plist`.
 
 ```bash
-# Build first
-npm run build
+# Install (done by telepi setup)
+# Plist installed to: ~/Library/LaunchAgents/com.telepi.plist
 
-# Run interactive setup — creates ~/.config/telepi/config.env, installs plist, loads service
-telepi setup
-
-# Check service status
-telepi status
-```
-
-### Manual plist installation
-
-```bash
-# Edit the template plist, replacing placeholder paths
-cp launchd/com.telepi.plist ~/Library/LaunchAgents/com.telepi.plist
-# Edit ~/Library/LaunchAgents/com.telepi.plist with absolute paths
-
-# Load the agent
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.telepi.plist
-
-# Restart the service
+# Restart after rebuild
 launchctl kickstart -k gui/$UID/com.telepi
 
 # Check status
-launchctl print gui/$UID/com.telepi
+launchctl list | grep telepi
+
+# Logs
+~/Library/Logs/TelePi/telepi.{out,err}.log
 ```
 
-### Logs
+### Linux (systemd --user)
 
-Installed-mode logs are at:
-
-```
-~/Library/Logs/TelePi/telepi.out.log
-~/Library/Logs/TelePi/telepi.err.log
-```
-
-### Unload
+Unit template in `systemd/telepi.service`.
 
 ```bash
-launchctl bootout gui/$UID ~/Library/LaunchAgents/com.telepi.plist
-```
+# Install (done by telepi setup)
+# Unit installed to: ~/.config/systemd/user/telepi.service
 
-## Linux Service (systemd)
-
-### Automatic setup via CLI
-
-```bash
-npm run build
-telepi setup
-telepi status
-```
-
-### Manual unit installation
-
-```bash
-# Copy and configure the unit template
-mkdir -p ~/.config/systemd/user
-cp systemd/telepi.service ~/.config/systemd/user/telepi.service
-# Edit the unit file, replacing __TELEPI_*__ placeholders with actual paths
-
-# Reload, enable, and start
 systemctl --user daemon-reload
-systemctl --user enable telepi.service
-systemctl --user start telepi.service
+systemctl --user enable telepi
+systemctl --user start telepi
 
-# Check status
-systemctl --user status telepi.service
+# Restart
+systemctl --user restart telepi
+
+# Logs
+journalctl --user -u telepi -f
+# Also: ~/.local/state/telepi/logs/telepi.{out,err}.log
 ```
 
-### Logs
+Unit: `Restart=on-failure`, `RestartSec=5`.
+
+## Docker
 
 ```bash
-# Follow logs
-journalctl --user -u telepi.service -f
+# Build and run
+docker compose up --build
 
-# Or check the append log files configured in the unit file
-cat ~/.local/state/telepi/logs/telepi.out.log
+# Or manual
+docker build -t telepi .
+docker run --env-file .env \
+  -v ~/.pi/agent/auth.json:/home/telepi/.pi/agent/auth.json:ro \
+  -v ~/.pi/agent/settings.json:/home/telepi/.pi/agent/settings.json:ro \
+  -v ~/.pi/agent/sessions:/home/telepi/.pi/agent/sessions \
+  -v ./workspace:/workspace \
+  telepi
 ```
 
-### Restart / stop
+Docker specs: `node:22-alpine`, non-root user `telepi` (uid 1001), 2 GB memory limit, 2.0 CPU cores, `cap_drop: ALL`, `no-new-privileges`.
+
+## CI / Release
+
+CI via GitHub Actions: `.github/workflows/release.yml`. Triggers on tag push matching `v*.*.*`.
+
+Uses npm Trusted Publishing from GitHub Actions (no `NPM_TOKEN` secret needed).
 
 ```bash
-systemctl --user restart telepi.service
-systemctl --user stop telepi.service
-```
-
-### Ensure service starts on boot (no login required)
-
-```bash
-loginctl enable-linger $USER
-```
-
-## npm Publishing
-
-TelePi uses npm Trusted Publishing from GitHub Actions — no `NPM_TOKEN` secret needed.
-
-### Release flow
-
-```bash
-# 1. Bump version in package.json
-npm version patch   # or minor / major
-
-# 2. Push with tag — triggers .github/workflows/release.yml
+# Release flow
+npm version patch|minor|major
 git push origin main --follow-tags
 ```
 
-### What CI does on tag push
+Uses `npx --yes npm@11.10.0` for publish (npm ≥ 11.5.1 required for Trusted Publishing).
 
-1. Checks out the repo, sets up Node 22.14
-2. Verifies the git tag matches `package.json` version
-3. Runs `npm ci`, then `npm test && npm run package:release`
-4. Publishes to npm with `--access public --provenance`
-   - Tags matching `v*.*.*-` (prerelease) get the `next` dist-tag
-   - Stable tags get the default `latest` dist-tag
-5. Creates a GitHub Release with `.tar.gz` and `.sha256` artifacts
-
-### Manual pre-release
+## Packaging
 
 ```bash
-npm version prerelease --preid=beta
-git push origin main --follow-tags
-# CI publishes with --tag next
+# Build + produce distributable archive
+npm run package:release
+
+# Full CI gate
+npm run ci:release    # test + package
 ```
 
-## CI Pipeline (all pushes and PRs)
+`scripts/package-release.mjs` creates the release artifact.
 
-`.github/workflows/ci.yml` runs on every push and pull request:
+## File Locations
 
-```bash
-npm ci
-npm run build
-npm run test:coverage
-```
-
-Concurrency is grouped per PR/ref so redundant runs are cancelled.
-
-## Installed Mode CLI Reference
-
-| Command | Description |
+| What | Path |
 |---|---|
-| `telepi setup` | Interactive setup: config, service install, extension symlink |
-| `telepi start` | Start the bot (used by the service unit) |
-| `telepi status` | Show version, config path, service state, extension state |
+| Config | `~/.config/telepi/config.env` |
+| macOS service | `~/Library/LaunchAgents/com.telepi.plist` |
+| Linux service | `~/.config/systemd/user/telepi.service` |
+| macOS logs | `~/Library/Logs/TelePi/` |
+| Linux logs | `~/.local/state/telepi/logs/` |
+| Pi auth | `~/.pi/agent/auth.json` |
+| Pi sessions | `~/.pi/agent/sessions/` |
+| Extension | `~/.pi/agent/extensions/telepi-handoff.ts` (symlink) |
+| Docker workspace | `/workspace` |

@@ -31,6 +31,7 @@ All commands are slash-commands registered via the Telegram Bot API. Each chat/t
 | `/abort` | Cancel the currently running operation | None |
 | `/session` | Show current session details (model, workspace, ID) | None |
 | `/sessions` | List all saved sessions with switch picker | `/sessions <path\|id>` to switch directly |
+| `/switch` | Alias for `/sessions` | Same as `/sessions` |
 | `/context` | Show context window usage and session token/cost stats | None |
 | `/model` | Open the model picker to switch the AI model | None |
 | `/tree` | View the conversation tree | `/tree all` or `/tree user` for filter modes |
@@ -183,6 +184,61 @@ interface PiSessionCallbacks {
   onToolEnd: (toolCallId: string, isError: boolean) => void;
   onAgentEnd: () => void;
 }
+
+interface PiSessionNewSessionOptions {
+  workspace?: string;
+  // Inherits parentSession, setup, withSession from SDK runtime options
+}
+
+type PiSessionSwitchOptions = {
+  workspace?: string;
+  withSession?: unknown;
+};
+
+type PiSessionForkOptions = NonNullable<Parameters<AgentSessionRuntime["fork"]>[1]>;
+```
+
+**Key classes:**
+
+```typescript
+// Manages a single per-chat Pi session
+class PiSessionService {
+  static create(config: TelePiConfig): Promise<PiSessionService>;
+  getInfo(): PiSessionInfo;
+  prompt(text: string, images?: ImageContent[]): Promise<void>;
+  abort(): Promise<void>;
+  newSession(request?: string | PiSessionNewSessionOptions): Promise<{ info: PiSessionInfo; created: boolean }>;
+  switchSession(sessionPath: string, request?: string | PiSessionSwitchOptions): Promise<PiSessionSwitchResult>;
+  fork(entryId: string, options?: PiSessionForkOptions): Promise<{ cancelled: boolean }>;
+  listModels(showAll?: boolean): Promise<PiSessionModelOption[]>;
+  setModel(provider: string, modelId: string, thinkingLevel?: ThinkingLevel): Promise<string>;
+  listAllSessions(): Promise<Array<{ id: string; firstMessage: string; path: string; messageCount: number; cwd: string; modified: Date; name?: string }>>;
+  listWorkspaces(): Promise<string[]>;
+  resolveSessionReference(sessionReference: string): Promise<ResolvedSessionReference>;
+  handback(): Promise<{ sessionFile?: string; workspace: string }>;
+  getContextUsage(): ContextUsage | undefined;
+  getSessionStats(): SessionStats | undefined;
+  getTree(): SessionTreeNodeLike[];
+  getLeafId(): string | null;
+  getEntry(id: string): SessionEntry | undefined;
+  getChildren(id: string): SessionEntry[];
+  navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean }>;
+  setLabel(targetId: string, label: string): void;
+  getLabels(): Array<{ id: string; label: string; description: string }>;
+  subscribe(callbacks: PiSessionCallbacks): () => void;
+  dispose(): void;
+}
+
+// Registry of per-chat PiSessionService instances
+class PiSessionRegistry {
+  static create(config: TelePiConfig): Promise<PiSessionRegistry>;
+  has(context: PiSessionContext): boolean;
+  get(context: PiSessionContext): PiSessionService | undefined;
+  getInfo(context: PiSessionContext): PiSessionInfo;
+  getOrCreate(context: PiSessionContext): Promise<PiSessionService>;
+  remove(context: PiSessionContext): void;
+  dispose(): void;
+}
 ```
 
 ### Tree Model (`src/tree.ts`)
@@ -221,6 +277,11 @@ interface TranscriptionResult {
 }
 
 type TranscriptionBackend = "parakeet" | "sherpa-onnx" | "openai";
+
+interface VoiceBackendStatus {
+  backends: TranscriptionBackend[];
+  warning?: string;
+}
 ```
 
 ### Telegram UI Context (`src/telegram-ui-context.ts`)
@@ -245,6 +306,11 @@ type KeyboardItem = { label: string; callbackData: string };
 // src/bot/slash-command.ts
 type NormalizedSlashCommand = { name: string; text: string };
 type CommandPickerFilter = "all" | "telepi" | "pi";
+type CommandPickerEntry =
+  | { id: number; kind: "telepi"; command: string; description: string; label: string; commandText: string }
+  | { id: number; kind: "pi"; name: string; description: string; label: string; commandText: string; source: string };
+type TelepiNativeCommandMenuEntry = { id: string; label: string; commandText: string };
+type TelepiNativeCommandMenu = { name: string; bareCommandText: string; title: string; entries: TelepiNativeCommandMenuEntry[] };
 
 // src/bot/message-rendering.ts
 interface ContextUsageInfo {
@@ -278,6 +344,25 @@ interface BotChatState {
   getLastPrompt(target: PiSessionContext): string | undefined;
   clearPromptMemory(target: PiSessionContext): void;
 }
+
+// src/bot/extension-dialogs.ts
+type PendingExtensionDialog =
+  | { kind: "select"; dialogId: string; messageId: number; title: string; options: string[]; resolve: (value: string | undefined) => void; }
+  | { kind: "confirm"; dialogId: string; messageId: number; title: string; message: string; resolve: (value: boolean) => void; }
+  | { kind: "input"; dialogId: string; messageId: number; title: string; placeholder?: string; resolve: (value: string | undefined) => void; };
+
+interface ExtensionDialogManager {
+  hasPending(target: PiSessionContext): boolean;
+  openSelect(target: PiSessionContext, title: string, options: string[], ...): Promise<string | undefined>;
+  openConfirm(target: PiSessionContext, title: string, message: string, ...): Promise<boolean>;
+  openInput(target: PiSessionContext, title: string, placeholder?: string, ...): Promise<string | undefined>;
+  cancelPending(target: PiSessionContext): Promise<boolean>;
+}
+
+// src/bot/message-rendering.ts
+type TelegramParseMode = "HTML";
+type RenderedText = { text: string; fallbackText: string; parseMode?: TelegramParseMode };
+type RenderedChunk = RenderedText & { sourceText: string };
 ```
 
 ### Model Scoping (`src/model-scope.ts`)
@@ -287,4 +372,10 @@ interface ScopedModelOption {
   model: Model<Api>;
   thinkingLevel?: ThinkingLevel;
 }
+```
+
+### Callback Data (`src/callback-data.ts`)
+
+```typescript
+const NOOP_PAGE_CALLBACK_DATA = "noop_page";
 ```

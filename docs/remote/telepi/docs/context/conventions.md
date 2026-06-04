@@ -50,6 +50,14 @@
 ## Error Handling
 
 - Errors shown to Telegram users go through `toFriendlyError()` (`src/errors.ts`) which maps raw error messages to human-readable strings and strips internal prefixes like `"Pi session prompt failed:"`.
+- **Dual-render pattern**: `src/bot/message-rendering.ts` renders every user-facing message as a `RenderedText` object with `text` (HTML), `fallbackText` (plain), and `parseMode`. The transport layer (`sendTextMessage`, `safeReply`, `safeEditMessage`) tries HTML first and falls back to plain text if Telegram returns a parse error.
+  ```ts
+  export type RenderedText = {
+    text: string;
+    fallbackText: string;
+    parseMode?: "HTML";
+  };
+  ```
 - Internal error logging uses `console.error` with a descriptive prefix string:
   ```ts
   console.error("Failed to dispose session after setup error:", disposeError);
@@ -90,6 +98,10 @@
 ## Formatting Pipeline
 
 Telegram message rendering follows a specific order in `src/format.ts`: escape HTML → extract code blocks → extract inline code → bold → italic → links → blockquotes → restore placeholders. This order matters — the placeholder system uses Unicode private-use-area characters to protect code spans from markdown transformation.
+
+The actual Telegram message size limit enforced in code is **4000 characters** (`TELEGRAM_MESSAGE_LIMIT` in `src/bot/message-rendering.ts`), not 4096. This provides a safety margin. Message splitting in `splitTelegramText()` prefers newline boundaries, then space boundaries, then hard-cuts.
+
+For streaming markdown output, `splitMarkdownForTelegram()` targets a smaller **3000-character chunk size** (`FORMATTED_CHUNK_TARGET`) and renders each chunk through `formatTelegramHTML()` independently, because the placeholder system does not survive chunk boundaries.
 
 ## Commit Style
 
