@@ -1,0 +1,9 @@
+pub mod bot;
+pub mod cli;
+pub mod config;
+pub mod error;
+pub mod format;
+pub mod install;
+pub mod paths;
+pub mod pi;
+pub mod voice;
