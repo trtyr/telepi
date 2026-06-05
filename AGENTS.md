@@ -69,13 +69,13 @@ docker build -t telepi .
 docker compose up -d
 
 # Environment
-cp telepi.toml ~/.config/telepi/config.toml  # TOML config (primary)
+cp telepi.toml ~/.pi/telepi/config.toml  # TOML config (primary)
 cp .env.example .env  # Or use .env as fallback
 ```
 
 ## Conventions
 
-- **Config resolution**: `TELEPI_CONFIG` env → `./telepi.toml` → `~/.config/telepi/config.toml`; env vars override individual TOML fields
+- **Config resolution**: `TELEPI_CONFIG` env → `./telepi.toml` → `~/.pi/telepi/config.toml`; env vars override individual TOML fields
 - **Error handling**: `thiserror` enum (`TelePiError`) with `to_friendly_error()` for user-facing messages
 - **Session management**: per-chat isolation via `SessionRegistry` (HashMap + RwLock)
 - **Busy guard**: prevents concurrent prompts per chat with `BotChatState` (Arc<Mutex>)

@@ -22,7 +22,7 @@ USER telepi
 WORKDIR /home/telepi
 
 # Config directory
-RUN mkdir -p /home/telepi/.config/telepi
+RUN mkdir -p /home/telepi/.pi/telepi
 
 ENTRYPOINT ["telepi"]
 CMD ["start"]

@@ -36,12 +36,12 @@ TOML config is the primary configuration method. Resolution order:
 
 1. `TELEPI_CONFIG` env var -> explicit path to `.toml` file
 2. `./telepi.toml` in current working directory
-3. `~/.config/telepi/config.toml` (default)
+3. `~/.pi/telepi/config.toml` (default)
 
 Env vars override individual TOML fields (see below).
 
 ```bash
-cp telepi.toml ~/.config/telepi/config.toml
+cp telepi.toml ~/.pi/telepi/config.toml
 ```
 
 **Structure:** `[telegram]` (bot_token, allowed_user_ids), `[pi]` (workspace, model, session_path, tool_verbosity), `[prompt_inbox]` (dir, interval_ms), `[voice]` (openai_api_key, sherpa_onnx_model_dir, sherpa_onnx_num_threads). Top-level: `proxy`, `log_level`. See `src/config.rs:54-92` for full types.
@@ -134,7 +134,7 @@ telepi status    # Version, config, service status
 ```bash
 cargo build --release
 cargo test
-cp telepi.toml ~/.config/telepi/config.toml  # Or create ./telepi.toml
+cp telepi.toml ~/.pi/telepi/config.toml  # Or create ./telepi.toml
 # Edit config: set bot_token + allowed_user_ids
 cargo run -- status                     # Verify config
 cargo run -- start                      # Test foreground

@@ -16,8 +16,8 @@
 cargo install telepi
 
 # Create config
-mkdir -p ~/.config/telepi
-cat > ~/.config/telepi/config.toml << 'EOF'
+mkdir -p ~/.pi/telepi
+cat > ~/.pi/telepi/config.toml << 'EOF'
 [telegram]
 bot_token = "your-bot-token"
 allowed_user_ids = [your-user-id]
@@ -71,7 +71,7 @@ TelePi loads config from (in order of priority):
 
 1. `TELEPI_CONFIG` environment variable
 2. `./telepi.toml` (current directory)
-3. `~/.config/telepi/config.toml`
+3. `~/.pi/telepi/config.toml`
 
 Environment variables override individual TOML fields.
 

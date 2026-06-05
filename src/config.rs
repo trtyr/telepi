@@ -134,7 +134,7 @@ impl TelePiConfig {
 /// Resolution order for config file:
 ///   1. `TELEPI_CONFIG` env var (explicit path to `.toml` file)
 ///   2. `./telepi.toml` in current working directory
-///   3. `~/.config/telepi/config.toml` (default)
+///   3. `~/.pi/telepi/config.toml` (default)
 ///
 /// After loading the TOML file, specific fields can be overridden by env vars.
 pub fn load_config() -> Result<TelePiConfig> {
@@ -280,7 +280,7 @@ fn resolve_toml_path() -> Option<PathBuf> {
         return Some(cwd_toml);
     }
 
-    // 3. ~/.config/telepi/config.toml
+    // 3. ~/.pi/telepi/config.toml
     let default = paths::default_config_path();
     if default.exists() {
         return Some(default);

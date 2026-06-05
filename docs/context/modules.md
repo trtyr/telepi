@@ -87,7 +87,7 @@
 
 ## `config.rs` — Configuration
 
-**Config resolution:** `TELEPI_CONFIG` env → `./telepi.toml` → `~/.config/telepi/config.toml`. TOML values can be overridden by env vars.
+**Config resolution:** `TELEPI_CONFIG` env → `./telepi.toml` → `~/.pi/telepi/config.toml`. TOML values can be overridden by env vars.
 
 **TOML structure:** `[telegram]` (bot_token, allowed_user_ids), `[pi]` (workspace, model, session_path, tool_verbosity), `[prompt_inbox]` (dir, interval_ms), `[voice]` (openai_api_key, sherpa_onnx_model_dir, sherpa_onnx_num_threads), top-level `proxy`, `log_level`.
 

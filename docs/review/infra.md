@@ -51,7 +51,7 @@ A self-hosted Rust binary with no CI/CD, a security issue in `.gitignore`, sever
 |--------|-------|----------|----------------|
 | .gitignore coverage | 🔴 | `.gitignore` contains only `/target`. `telepi.toml` (with plaintext bot token) and `.env` are **not ignored**. | Add `telepi.toml`, `.env`, `*.toml` (local config) to `.gitignore` immediately. |
 | Secrets in repo | 🔴 | `telepi.toml:10` contains a live Telegram bot token in plaintext. This is committed to git history. | **Rotate the token immediately.** Add `telepi.toml` to `.gitignore`. Use `git filter-branch` or BFG to purge from history. |
-| Config resolution | ✅ | `TELEPI_CONFIG` env → `./telepi.toml` → `~/.config/telepi/config.toml` (documented in `docs/context/tech-stack.md:100`). | Good layered approach. |
+| Config resolution | ✅ | `TELEPI_CONFIG` env → `./telepi.toml` → `~/.pi/telepi/config.toml` (documented in `docs/context/tech-stack.md:100`). | Good layered approach. |
 | .env.example | ✅ | `.env.example` exists with all variables documented and safe placeholder values. | Good. |
 | Docker secrets | ✅ | `docker-compose.yml:8` mounts `.env` as `:ro` (read-only). | Good practice. |
 | Docker networking | ⚠️ | `docker-compose.yml:16` uses `network_mode: host`. Exposes all host ports to the container. | Consider explicit port mapping or a dedicated bridge network if isolation matters. |

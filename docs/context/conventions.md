@@ -17,7 +17,7 @@ TOML-based config system (`src/config.rs`). Resolution order (`load_config()`):
 
 1. `TELEPI_CONFIG` env var → explicit `.toml` path
 2. `./telepi.toml` in current working directory
-3. `~/.config/telepi/config.toml` (default)
+3. `~/.pi/telepi/config.toml` (default)
 
 After loading the TOML file, specific fields can be overridden by env vars (e.g. `TELEGRAM_BOT_TOKEN`, `TELEPI_WORKSPACE`, `TOOL_VERBOSITY`). Fallback: `.env` via `dotenvy` when no TOML file is found.
 
@@ -100,7 +100,7 @@ Convention: each `mod.rs` is minimal (re-exports only, or contains the full impl
 ## Other Noteworthy Patterns
 
 - **Constants**: module-level `pub const` in dedicated files (`paths.rs`).
-- **Path resolution**: `expand_home()` handles `~` prefix; `resolve_from_cwd()` handles relative paths; `default_config_path()` returns `~/.config/telepi/config.toml`. Used throughout config and install modules.
+- **Path resolution**: `expand_home()` handles `~` prefix; `resolve_from_cwd()` handles relative paths; `default_config_path()` returns `~/.pi/telepi/config.toml`. Used throughout config and install modules.
 - **Tests**: 8 unit tests in `src/config.rs` (covering user ID parsing, tool verbosity, TOML parsing with defaults/empty). No integration tests, no `tests/` directory.
 - **`lib.rs`**: exposes all modules as `pub mod` — the crate is usable as a library in theory, but no external consumers.
 - **Prompt inbox**: `bot/prompt_inbox.rs` polls a directory for `.txt` files and feeds them as prompts. Configured via `prompt_inbox.dir` and `prompt_inbox.interval_ms` in TOML.

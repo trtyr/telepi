@@ -29,12 +29,12 @@ pub fn resolve_from_cwd(path: &str) -> PathBuf {
     }
 }
 
-/// Default TelePi config directory: `~/.config/telepi/`
+/// Default TelePi config directory: `~/.pi/telepi/`
 pub fn default_config_dir() -> PathBuf {
-    home_dir().join(".config").join("telepi")
+    home_dir().join(".pi").join("telepi")
 }
 
-/// Default config file path: `~/.config/telepi/config.toml`
+/// Default config file path: `~/.pi/telepi/config.toml`
 pub fn default_config_path() -> PathBuf {
     default_config_dir().join("config.toml")
 }

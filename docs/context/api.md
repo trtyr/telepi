@@ -244,7 +244,7 @@ impl BotChatState {
 
 1. `TELEPI_CONFIG` env var → explicit path
 2. `.env` in current working directory
-3. `~/.config/telepi/.env` (default)
+3. `~/.pi/telepi/config.toml` (default)
 
 ### Workspace
 

@@ -5,11 +5,11 @@ services:
     restart: unless-stopped
     volumes:
       # Mount config file
-      - ~/.config/telepi/.env:/home/telepi/.config/telepi/.env:ro
+      - ~/.pi/telepi/config.toml:/home/telepi/.pi/telepi/config.toml:ro
       # Mount Pi sessions directory
       - ~/.pi:/home/telepi/.pi
       # Mount workspace (adjust as needed)
       - ${TELEPI_WORKSPACE:-.}:/workspace
     environment:
-      - TELEPI_CONFIG=/home/telepi/.config/telepi/.env
+      - TELEPI_CONFIG=/home/telepi/.pi/telepi/config.toml
     network_mode: host
