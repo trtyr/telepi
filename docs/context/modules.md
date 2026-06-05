@@ -1,318 +1,120 @@
 # Modules
 
-## Quick Reference
-
-| Module | Path | Files | Responsibility |
-|---|---|---|---|
-| bot | `src/bot/` | 5 + 5 commands | Telegram bot handler, commands, state, transport |
-| pi | `src/pi/` | 4 | Pi agent session management (trait + CLI impl + registry) |
-| install | `src/install/` | 4 | Service installation for launchd/systemd, status detection |
-| voice | `src/voice/` | 1 | Voice message transcription (3 backends) |
-| cli | `src/cli.rs` | 1 | CLI argument parsing (clap) |
-| config | `src/config.rs` | 1 | Config loading from env/.env, validation |
-| error | `src/error.rs` | 1 | Error types (thiserror), friendly display |
-| format | `src/format.rs` | 1 | HTML escaping for Telegram |
-| paths | `src/paths.rs` | 1 | Path resolution, platform-aware defaults |
-| entry | `src/main.rs` | 1 | tokio entrypoint, command dispatch |
-| lib | `src/lib.rs` | 1 | Module declarations |
+| Module | Path | Responsibility |
+|---|---|---|
+| bot | `src/bot/` | Telegram bot handler, commands, state, transport, prompt inbox |
+| pi | `src/pi/` | Pi agent session management (trait + CLI impl + registry + tree) |
+| install | `src/install/` | Service installation (launchd/systemd), status detection |
+| voice | `src/voice/` | Voice transcription (3 backends, only OpenAI wired) |
+| cli | `src/cli.rs` | CLI argument parsing (clap) |
+| config | `src/config.rs` | TOML + env config loading, validation |
+| error | `src/error.rs` | Error types (thiserror), friendly display |
+| format | `src/format.rs` | HTML escaping for Telegram |
+| paths | `src/paths.rs` | Platform-aware path resolution |
+| main | `src/main.rs` | Entrypoint, tokio runtime, proxy setup, process cleanup |
 
 ---
 
 ## `bot/` — Telegram Bot Layer
 
-### Files
+**Key files:** `mod.rs` (105), `handler.rs` (490), `state.rs` (107), `transport.rs` (131), `prompt_inbox.rs` (108), `keyboard.rs` (71), `commands/` (5 files)
 
-| File | Lines | Role |
-|---|---|---|
-| `mod.rs` | ~65 | `pub async fn run(config)` — builds teloxide Dispatcher, registers command filter chain |
-| `handler.rs` | ~467 | Message endpoints: `text_handler`, `voice_handler`, `photo_handler`, `abort_handler`, `retry_handler`, `process_prompt` (streaming) |
-| `state.rs` | ~107 | `BotChatState` — per-chat status tracking (Idle/Processing/Switching/Transcribing), last prompt storage |
-| `transport.rs` | ~82 | `send_text`, `edit_text`, `send_typing` — Telegram API wrappers with 4096-char chunking |
-| `keyboard.rs` | ~71 | `paginate_keyboard` — generic paginated inline keyboard builder |
-| `commands/mod.rs` | ~113 | `Command` enum (BotCommands derive), `dispatch()` router, `register_menu()`, `send_welcome()` |
-| `commands/context.rs` | ~33 | `/context` — shows session stats (tokens, messages) |
-| `commands/model.rs` | ~30 | `/model` — shows current AI model |
-| `commands/sessions.rs` | ~83 | `/new` (destroy + recreate), `/sessions` (list), `/handback` (resume-in-terminal instructions) |
-| `commands/tree.rs` | ~24 | `/tree`, `/branch`, `/label` — all stubs |
-| `commands/basic.rs` | ~41 | `cmd_start`, `cmd_help` — **not compiled** (file exists but `pub mod basic` is not declared in `commands/mod.rs`) |
+**Public surface:** `run(config)` → builds teloxide Dispatcher with dptree filter chain (command → voice → photo → text). `HandlerState { config, sessions, chat_state, model_lists }` shared via `dptree::deps!`. Commands: `/new`, `/sessions`, `/handback`, `/abort`, `/retry`, `/model` (inline keyboard picker + `handle_model_callback`), `/tree` (renders session tree via `pi::tree`), `/context`.
 
-### Public API
-
-```rust
-// mod.rs
-pub async fn run(config: TelePiConfig) -> anyhow::Result<()>
-
-// handler.rs
-pub struct HandlerState { config, sessions, chat_state }
-pub async fn text_handler(bot, msg, state) -> ResponseResult<()>
-pub async fn voice_handler(bot, msg, state) -> ResponseResult<()>
-pub async fn photo_handler(bot, msg, state) -> ResponseResult<()>
-pub async fn abort_handler(bot, msg, state) -> ResponseResult<()>
-pub async fn retry_handler(bot, msg, state) -> ResponseResult<()>
-
-// state.rs
-pub type ChatKey = String;  // "{chat_id}" or "{chat_id}::{thread_id}"
-pub enum ChatStatus { Idle, Processing, Switching, Transcribing }
-pub struct BotChatState  // Clone, Arc<Mutex<>> interior
-pub fn chat_key(chat_id, thread_id) -> ChatKey
-pub fn chat_key_to_context(key) -> SessionContext
-
-// transport.rs
-pub const TELEGRAM_MESSAGE_LIMIT: usize = 4096
-pub async fn send_text(bot, chat_id, reply_to, text) -> Result<Message>
-pub async fn edit_text(bot, chat_id, message_id, text) -> Result<()>
-pub async fn send_typing(bot, chat_id) -> Result<()>
-
-// keyboard.rs
-pub const KEYBOARD_PAGE_SIZE: usize = 6
-pub struct KeyboardItem { label, callback_data }
-pub fn paginate_keyboard(items, page, filter_prefix) -> (InlineKeyboardMarkup, usize)
-
-// commands/mod.rs
-pub enum Command { Start, Help, New, Sessions, Handback, Abort, Retry, Model, Tree, Context }
-pub async fn register_menu(bot) -> Result<()>
-pub async fn dispatch(bot, msg, cmd, state) -> ResponseResult<()>
-```
-
-### Internal Dependencies
-
-- `handler.rs` → `state`, `transport`, `config`, `format`, `pi::registry`, `pi::session::PiEvent`
-- `state.rs` → `pi::session::SessionContext`
-- `commands/*.rs` → `handler::HandlerState`, `state`, `pi::registry`
+**Internal wiring:**
+- `handler.rs` → `state`, `transport`, `config`, `format`, `pi::registry`, `pi::session::PiEvent`, `pi::cli_session::ModelInfo`
+- `prompt_inbox.rs` → `handler::HandlerState`, `state`, `config`
+- `commands/model.rs` → `pi::cli_session::CliSession::list_models`
+- `commands/tree.rs` → `pi::tree` (JSONL parsing + rendering)
 - `transport.rs`, `keyboard.rs` → teloxide only (no internal deps)
 
-### Patterns
-
-- **dptree filter chain**: command → voice → photo → text (priority order)
+**Notable patterns:**
 - **Busy guard**: every handler checks `state.is_busy(key)` before processing
-- **Optimistic edit**: send "🤔 Thinking...", then stream-edit with actual response
-- **Streaming prompt**: `process_prompt` uses `prompt_streaming` + `mpsc::channel<PiEvent>` to receive text deltas, tool events, and turn-end; a spawned task applies debounced edits (1.5s interval) to the Telegram message; tool call start/end shows inline `🔧 <i>tool_name</i>...` indicators
+- **Streaming prompt**: `process_prompt` uses `prompt_streaming` + `mpsc::channel<PiEvent>`; spawned task applies debounced edits (1.5s) to the Telegram message
+- **Retry**: `transport::with_retry` retries network errors up to 3× with exponential backoff (2s × attempt); `mod.rs` retries 409 Conflict up to 5× with 3s delay
+- **Prompt inbox**: background task polls `prompt_inbox_dir` for `.txt` files at `prompt_inbox_interval_ms` (default 60s), processes oldest-first, uses synthetic `"inbox"` chat key
+- **`basic.rs` deleted**: `cmd_start`/`cmd_help` replaced by inline `send_welcome()` in `commands/mod.rs`
+- **Dead code**: `commands/tree.rs` defines `cmd_branch` and `cmd_label` (both stubs, not wired into `Command` enum)
 
 ---
 
 ## `pi/` — Pi Agent Session Layer
 
-### Files
+**Key files:** `session.rs` (118), `registry.rs` (90), `cli_session.rs` (548), `tree.rs` (350)
 
-| File | Lines | Role |
-|---|---|---|
-| `mod.rs` | 3 | Re-exports |
-| `session.rs` | ~117 | `PiSession` trait + data types (`SessionContext`, `SessionInfo`, `PromptResponse`, `ToolCallRecord`, `SessionStats`, `PiEvent`) |
-| `registry.rs` | ~90 | `SessionRegistry` — HashMap-based session store, `get_or_create` with double-checked locking |
-| `cli_session.rs` | ~489 | `CliSession` — `PiSession` impl backed by `pi --mode json --print` CLI subprocess with streaming JSON event parsing |
+**Public surface:**
+- `PiSession` trait: `prompt`, `prompt_with_images`, `prompt_streaming`, `abort`, `set_model`, `dispose`, `info`, `stats`
+- `SessionRegistry`: `get_or_create(ctx)`, `remove(ctx)`, `list()` — HashMap + `Arc<RwLock>`
+- `CliSession`: `create(config, ctx, bootstrap_path)`, `pi_cli_available()`, `list_models()`
+- `pi::tree`: `parse_session_jsonl`, `build_tree`, `render_tree`, `find_session_dirs`, `find_latest_session_file` — reads Pi's native `~/.pi/agent/sessions/` JSONL format
 
-### Public API
+**Data types:** `SessionContext { chat_id, message_thread_id }`, `SessionInfo`, `PromptResponse { text, tool_calls }`, `PiEvent` (9 variants: ThinkingDelta, TextDelta, ToolStart/Output/End, Usage, TurnEnd, Error), `ModelInfo { provider, model, context_window, ... }`, `SessionEntry`/`TreeNode` (tree module)
 
-```rust
-// session.rs
-pub struct SessionContext { chat_id: i64, message_thread_id: Option<i32> }
-pub struct SessionInfo { session_id, session_path, workspace, model, session_name }
-pub struct PromptResponse { text: String, tool_calls: Vec<ToolCallRecord> }
-pub struct ToolCallRecord { tool_name, tool_call_id, output, is_error }
-pub struct SessionStats { session_id, total_messages, tokens_in, tokens_out, cost }
-
-pub enum PiEvent {
-    ThinkingDelta { delta },
-    TextDelta { delta },
-    ToolStart { tool_name, tool_call_id },
-    ToolOutput { tool_call_id, output, is_error },
-    ToolEnd { tool_call_id },
-    Usage { tokens_in, tokens_out, cost, model },
-    TurnEnd { text },
-    Error { message },
-}
-
-#[async_trait]
-pub trait PiSession: Send + Sync {
-    fn info(&self) -> SessionInfo;
-    async fn stats(&self) -> SessionStats;
-    async fn prompt(&self, text: &str) -> Result<PromptResponse>;
-    async fn prompt_with_images(&self, text: &str, images: &[PathBuf]) -> Result<PromptResponse>;
-    async fn prompt_streaming(&self, text: &str, tx: mpsc::Sender<PiEvent>) -> Result<PromptResponse>;
-    async fn abort(&self) -> Result<()>;
-    async fn set_model(&self, model: &str) -> Result<()>;
-    async fn dispose(&self) -> Result<()>;
-}
-
-// registry.rs
-pub struct SessionRegistry  // Clone, Arc<RwLock<>>
-pub async fn get_or_create(&self, ctx: &SessionContext) -> Result<Arc<dyn PiSession>>
-pub async fn remove(&self, ctx: &SessionContext)
-pub async fn list(&self) -> Vec<SessionInfo>
-
-// cli_session.rs
-pub struct CliSession
-pub async fn create(config, ctx, bootstrap_session_path) -> Result<Self>
-pub fn pi_cli_available() -> bool  // which::which("pi")
-```
-
-### Key Details
-
-- **Bootstrap path**: `PI_SESSION_PATH` from config is consumed by the first `get_or_create` call (`Option::take`). All subsequent chats get fresh sessions.
-- **Streaming JSON protocol**: `CliSession` spawns `pi --mode json --print <text>` and reads stdout line-by-line. Each line is parsed as a `JsonEvent` (tagged enum with serde). `MessageUpdate` events carry `AssistantMessageEvent` variants (`ThinkingDelta`, `TextDelta`, `ToolStart`, `ToolEnd`, etc.) which are translated to `PiEvent`s and sent through the `mpsc::Sender`.
-- **JSON event types** (internal to `cli_session.rs`): `JsonEvent` (Session, AgentStart, AgentEnd, TurnStart, TurnEnd, MessageStart, MessageEnd, MessageUpdate, Unknown), `AssistantMessageEvent` (ThinkingStart/Delta/End, TextStart/Delta/End, ToolStart/Update/End, Unknown), `JsonMessage`, `JsonUsage`, `JsonCost`, `ToolCallInfo`.
-- **Abort support**: `CliSession` stores `running_child: Arc<Mutex<Option<Child>>>`. `abort()` sends `SIGTERM` to the child PID (unix only).
-- **Session storage**: data dir per platform (`dirs::data_dir()/telepi/sessions/<uuid>`), or bootstrap path.
-- **Not yet implemented**: `stats()` returns zeros (TODO: parse session JSONL), `set_model()` is a no-op (TODO: persist model selection), `prompt_with_images` uses `@file` CLI syntax.
+**Key details:**
+- **Bootstrap path**: `PI_SESSION_PATH` is consumed by first `get_or_create` (`Option::take`), subsequent chats get fresh sessions
+- **Streaming JSON protocol**: spawns `pi --mode json --print <text>`, reads stdout line-by-line as `JsonEvent` (tagged enum), translates to `PiEvent`s
+- **Abort**: stores `running_child: Arc<Mutex<Option<Child>>>`, sends `SIGTERM` (unix only)
+- **Not yet implemented**: `stats()` returns zeros, `set_model()` is no-op, `prompt_with_images` uses `@file` CLI syntax
+- **Tree module** is new: reads `session.jsonl` files from `~/.pi/agent/sessions/<encoded-workspace>/<uuid>/run-N/`, builds parent-child tree, renders with box-drawing chars (max_depth=4, max_entries=30)
 
 ---
 
 ## `install/` — Service Installation
 
-### Files
+**Key files:** `mod.rs` (74), `platform.rs` (53), `launchd.rs` (62), `systemd.rs` (43)
 
-| File | Lines | Role |
-|---|---|---|
-| `mod.rs` | ~74 | `get_status()` — aggregates config, service, and extension status |
-| `platform.rs` | ~53 | `Platform` enum (MacOs/Linux), `detect_platform()`, status structs |
-| `launchd.rs` | ~62 | `build_plist()` — generates macOS launchd XML, `installed_plist_path()` |
-| `systemd.rs` | ~43 | `build_unit()` — generates systemd unit file, `installed_unit_path()` |
+**Public surface:** `get_status() → TelePiStatus { version, config_path, service, extension }`, `detect_platform()`, `build_plist()`/`build_unit()` for generating service files.
 
-### Public API
-
-```rust
-pub async fn get_status() -> TelePiStatus  // mod.rs
-pub enum Platform { MacOs, Linux }         // platform.rs
-pub fn detect_platform() -> Option<Platform>
-pub struct ServiceStatus { installed, running, platform, unit_path }
-pub struct ExtensionStatus { installed, path, method }
-pub struct TelePiStatus { version, config_path, service, extension }
-pub fn build_plist(bin, config, log_dir) -> String   // launchd.rs
-pub fn installed_plist_path() -> PathBuf
-pub fn build_unit(bin, config, log_dir) -> String    // systemd.rs
-pub fn installed_unit_path() -> PathBuf
-```
-
-### Key Details
-
-- **Extension detection**: looks for `~/.pi/agent/extensions/telepi-handoff.ts`
-- **Service running check**: TODO (always returns `running: false`)
-- **Used by**: `Commands::Status` in main.rs
+**Key details:** Extension detection looks for `~/.pi/agent/extensions/telepi-handoff.ts`. Service running check is TODO. Used by `Commands::Status`.
 
 ---
 
 ## `voice/` — Voice Transcription
 
-### Files
+**Key file:** `mod.rs` (~131 lines)
 
-| File | Lines | Role |
-|---|---|---|
-| `mod.rs` | ~131 | Backend detection, `transcribe()` dispatcher, OpenAI Whisper implementation |
+**Public surface:** `transcribe(file_path) → TranscriptionResult { text, backend, duration_ms }`, `available_backends()`, `VoiceBackend` enum (Parakeet, SherpaOnnx, OpenAi).
 
-### Public API
-
-```rust
-pub struct TranscriptionResult { text, backend, duration_ms }
-pub enum VoiceBackend { Parakeet, SherpaOnnx, OpenAi }
-pub fn available_backends() -> Vec<VoiceBackend>
-pub async fn transcribe(file_path: &Path) -> Result<TranscriptionResult>
-```
-
-### Key Details
-
-- **Priority order**: Parakeet (macOS Apple Silicon) > Sherpa-ONNX (cross-platform) > OpenAI Whisper (cloud)
-- **Only OpenAI is implemented**. Parakeet and Sherpa-ONNX return `Err(not yet implemented)`.
-- **Wired up**: `voice_handler` in `bot/handler.rs` calls `crate::voice::transcribe` for voice/audio messages, then feeds the transcript as a prompt.
+**Key details:** Priority: Parakeet (macOS ARM) > Sherpa-ONNX > OpenAI Whisper. Only OpenAI is implemented. Wired into `voice_handler` in `bot/handler.rs`.
 
 ---
 
 ## `cli.rs` — CLI Definition
 
-| Item | Type | Details |
-|---|---|---|
-| `Cli` | struct | `#[command(name = "telepi")]`, optional `Commands` subcommand |
-| `Commands::Start` | variant | Default. Starts bot polling. |
-| `Commands::Setup` | variant | Placeholder. Fields: `bot_token`, `user_ids`, `workspace` (all optional) |
-| `Commands::Status` | variant | Calls `install::get_status()`, prints diagnostics |
+`Cli` struct with optional `Commands` subcommand: `Start` (default, starts bot), `Setup` (prints `telepi.toml` template), `Status` (calls `install::get_status()`).
 
 ---
 
 ## `config.rs` — Configuration
 
-### Key Types
+**Config resolution:** `TELEPI_CONFIG` env → `./telepi.toml` → `~/.config/telepi/config.toml`. TOML values can be overridden by env vars.
 
-```rust
-pub struct TelePiConfig {
-    pub telegram_bot_token: String,
-    pub telegram_allowed_user_ids: Vec<u64>,
-    pub workspace: PathBuf,
-    pub tool_verbosity: ToolVerbosity,       // All | Summary | ErrorsOnly | None
-    pub prompt_inbox_dir: Option<PathBuf>,
-    pub prompt_inbox_interval_ms: u64,
-    pub openai_api_key: Option<String>,
-    pub sherpa_onnx_model_dir: Option<PathBuf>,
-    pub sherpa_onnx_num_threads: u32,
-    pub pi_session_path: Option<PathBuf>,
-    pub pi_model: Option<String>,
-    pub config_source: ConfigSource,
-}
-```
+**TOML structure:** `[telegram]` (bot_token, allowed_user_ids), `[pi]` (workspace, model, session_path, tool_verbosity), `[prompt_inbox]` (dir, interval_ms), `[voice]` (openai_api_key, sherpa_onnx_model_dir, sherpa_onnx_num_threads), top-level `proxy`, `log_level`.
 
-### Config Resolution
+**Key types:** `TomlConfig` (serde), `TelePiConfig` (resolved), `ConfigSource` (Toml|EnvOnly|Missing), `ToolVerbosity` (All|Summary|ErrorsOnly|None).
 
-1. `TELEPI_CONFIG` env → explicit path
-2. `.env` in cwd
-3. `~/.config/telepi/.env`
-
-Workspace resolution: `/workspace` (Docker) → `TELEPI_WORKSPACE` → cwd → `.`
-
-### Env Vars
-
-| Var | Required | Default |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | yes | — |
-| `TELEGRAM_ALLOWED_USER_IDS` | yes | — |
-| `TELEPI_WORKSPACE` | no | cwd |
-| `TOOL_VERBOSITY` | no | `summary` |
-| `TELEPI_PROMPT_INBOX_DIR` | no | — |
-| `TELEPI_PROMPT_INBOX_INTERVAL_MS` | no | 60000 |
-| `OPENAI_API_KEY` | no | — |
-| `SHERPA_ONNX_MODEL_DIR` | no | — |
-| `SHERPA_ONNX_NUM_THREADS` | no | 2 |
-| `PI_SESSION_PATH` | no | — |
-| `PI_MODEL` | no | — |
+**Workspace resolution:** `TELEPI_WORKSPACE` → `pi.workspace` → `/workspace` (Docker) → cwd → `.`
+**Proxy resolution:** `HTTP_PROXY` → `HTTPS_PROXY` → `ALL_PROXY` → `toml.proxy`
+**Log level:** `RUST_LOG` → `toml.log_level` → `"info"`
 
 ---
 
 ## `error.rs` — Error Handling
 
-```rust
-pub enum TelePiError {
-    MissingEnv(&'static str),
-    InvalidConfig(String),
-    Telegram(String),
-    PiSession(String),
-    PiProcess(String),
-    Voice(String),
-    Install(String),
-    Io(std::io::Error),
-    Http(reqwest::Error),
-    Serde(serde_json::Error),
-    Other(anyhow::Error),
-}
-pub fn to_friendly_error(err) -> String  // strips internal prefixes
-```
-
-All variants are string-wrapped except the three `From` impls (Io, Http, Serde).
-`teloxide::RequestError` converts to `Telegram(String)`.
+`TelePiError` enum (thiserror): `MissingEnv`, `InvalidConfig`, `Telegram`, `PiSession`, `PiProcess`, `Voice`, `Install`, `Io`, `Http`, `Serde`, `Other`. All string-wrapped except the `From` impls. `teloxide::RequestError` → `Telegram(String)`. Helper: `to_friendly_error()`.
 
 ---
 
-## `paths.rs` — Path Utilities
+## `paths.rs` + `format.rs` — Utilities
 
-| Function | Returns |
-|---|---|
-| `home_dir()` | `dirs::home_dir()` |
-| `expand_home("~/foo")` | resolved absolute path |
-| `resolve_from_cwd(path)` | absolute path |
-| `default_config_dir()` | `~/.config/telepi/` |
-| `default_config_path()` | `~/.config/telepi/.env` |
-| `default_systemd_user_dir()` | `~/.config/systemd/user/` |
-| `default_log_dir()` | macOS: `~/Library/Logs/TelePi/`, Linux: `~/.local/state/telepi/logs/` |
-| `DOCKER_WORKSPACE_PATH` | `"/workspace"` |
+**paths:** `home_dir()`, `expand_home()`, `resolve_from_cwd()`, `default_config_dir/path()`, `default_systemd_user_dir()`, `default_log_dir()`, `DOCKER_WORKSPACE_PATH` (`"/workspace"`).
+
+**format:** `escape_html(text)` — replaces `&`, `<`, `>` for Telegram HTML parse mode.
 
 ---
 
-## `format.rs` — Formatting
+## `main.rs` — Entrypoint
 
-Single function: `escape_html(text) -> String`. Replaces `&`, `<`, `>` for Telegram HTML parse mode.
+**Startup flow:** parse CLI → match command → for `Start`: `load_config()`, `kill_existing_processes()` (pgrep/pkill), set `HTTP_PROXY`/`HTTPS_PROXY` from config, build tokio multi-thread runtime, init tracing with `cfg.log_level`, call `bot::run(cfg)`.
+
+**`kill_existing_processes()`:** kills stale `telepi` and `pi --mode json` processes via `pgrep -f`/`pkill -f` before starting.

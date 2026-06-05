@@ -13,16 +13,20 @@ Single top-level error enum `TelePiError` in `src/error.rs` using `thiserror`.
 
 ## Config
 
-Resolution order (`src/config.rs:load_config()`):
-1. `TELEPI_CONFIG` env var → explicit path
-2. `.env` in cwd
-3. `~/.config/telepi/.env` (default)
+TOML-based config system (`src/config.rs`). Resolution order (`load_config()`):
 
-Two internal helpers (not public):
-- `require_env(name)` → `Result<String>`, maps missing to `MissingEnv`
-- `optional_string(name)` → `Option<String>`, trims whitespace, filters empty
+1. `TELEPI_CONFIG` env var → explicit `.toml` path
+2. `./telepi.toml` in current working directory
+3. `~/.config/telepi/config.toml` (default)
 
-`TelePiConfig` is a flat struct (no nesting). All fields public. Loaded once, wrapped in `Arc<TelePiConfig>`, threaded through `HandlerState` and `SessionRegistry`.
+After loading the TOML file, specific fields can be overridden by env vars (e.g. `TELEGRAM_BOT_TOKEN`, `TELEPI_WORKSPACE`, `TOOL_VERBOSITY`). Fallback: `.env` via `dotenvy` when no TOML file is found.
+
+One internal helper (not public):
+- `env_override(name)` → `Option<String>`, trims whitespace, filters empty
+
+Config structures use nested TOML sections (`TomlConfig` → `TelegramSection`, `PiSection`, `PromptInboxSection`, `VoiceSection`), each with `#[serde(default)]`. Resolved into a flat `TelePiConfig` struct — all fields public. Loaded once, wrapped in `Arc<TelePiConfig>`, threaded through `HandlerState` and `SessionRegistry`.
+
+`ToolVerbosity` enum with `#[serde(rename_all = "kebab-case")]` and a `from_str_loose()` parser for env var overrides.
 
 ## Module Organization
 
@@ -31,22 +35,29 @@ src/
 ├── main.rs          # Entrypoint — delegates to cli.rs
 ├── lib.rs           # Re-exports all top-level modules
 ├── cli.rs           # clap derive (Commands enum)
-├── config.rs        # Env loading, TelePiConfig struct
+├── config.rs        # TOML + env loading, TelePiConfig struct
 ├── error.rs         # TelePiError, Result alias, to_friendly_error()
 ├── format.rs        # escape_html() — single utility function
-├── paths.rs         # Path constants + home_dir/expand_home helpers
+├── paths.rs         # Path constants + home_dir/expand_home/resolve_from_cwd helpers
 ├── bot/
 │   ├── mod.rs       # run() — builds teloxide Dispatcher
 │   ├── commands/    # BotCommands derive + dispatch + per-command modules
+│   │   ├── mod.rs   # Command enum + dispatch() + send_welcome()
+│   │   ├── context.rs
+│   │   ├── model.rs
+│   │   ├── sessions.rs
+│   │   └── tree.rs
 │   ├── handler.rs   # text/voice/photo/abort/retry handlers
 │   ├── keyboard.rs  # InlineKeyboard builders
+│   ├── prompt_inbox.rs  # Polling for .txt prompt files in a directory
 │   ├── state.rs     # BotChatState (busy guard)
 │   └── transport.rs # Telegram message sending utilities
 ├── pi/
 │   ├── mod.rs       # Re-exports
 │   ├── session.rs   # PiSession trait + event types
 │   ├── cli_session.rs  # CLI subprocess implementation
-│   └── registry.rs  # SessionRegistry (HashMap + RwLock)
+│   ├── registry.rs  # SessionRegistry (HashMap + RwLock)
+│   └── tree.rs      # Conversation tree parsing from session dirs
 ├── install/
 │   └── mod.rs       # launchd/systemd service install
 └── voice/
@@ -79,9 +90,9 @@ Convention: each `mod.rs` is minimal (re-exports only, or contains the full impl
 
 | Location | TODO |
 |----------|------|
-| `src/main.rs:35` | Interactive setup |
-| `src/pi/cli_session.rs:410` | Parse session JSONL for actual stats |
-| `src/pi/cli_session.rs:481` | Persist model selection |
+| `src/pi/cli_session.rs:466` | Parse session JSONL file for actual stats |
+| `src/bot/commands/tree.rs:76` | Implement actual branch navigation |
+| `src/bot/commands/tree.rs:106` | Implement actual labeling (store in state) |
 | `src/voice/mod.rs:75` | Implement Parakeet CoreML transcription |
 | `src/voice/mod.rs:81` | Implement Sherpa-ONNX transcription |
 | `src/install/mod.rs:30` | Check if service is actually running |
@@ -89,7 +100,8 @@ Convention: each `mod.rs` is minimal (re-exports only, or contains the full impl
 ## Other Noteworthy Patterns
 
 - **Constants**: module-level `pub const` in dedicated files (`paths.rs`).
-- **Path resolution**: `expand_home()` handles `~` prefix; `resolve_from_cwd()` handles relative paths. Used throughout config and install modules.
-- **Tests**: only in `src/config.rs` (4 unit tests). No integration tests, no `tests/` directory.
+- **Path resolution**: `expand_home()` handles `~` prefix; `resolve_from_cwd()` handles relative paths; `default_config_path()` returns `~/.config/telepi/config.toml`. Used throughout config and install modules.
+- **Tests**: 8 unit tests in `src/config.rs` (covering user ID parsing, tool verbosity, TOML parsing with defaults/empty). No integration tests, no `tests/` directory.
 - **`lib.rs`**: exposes all modules as `pub mod` — the crate is usable as a library in theory, but no external consumers.
-- **Dead code**: `src/bot/commands/basic.rs` defines `cmd_start` and `cmd_help`, but `commands/mod.rs:dispatch()` uses an inline `send_welcome()` instead. The functions in `basic.rs` are never called.
+- **Prompt inbox**: `bot/prompt_inbox.rs` polls a directory for `.txt` files and feeds them as prompts. Configured via `prompt_inbox.dir` and `prompt_inbox.interval_ms` in TOML.
+- **Retry loop**: `bot/mod.rs:run()` retries on 409 Conflict (up to 5 attempts, 3s delay) — handles competing bot instances.

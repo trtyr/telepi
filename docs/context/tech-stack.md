@@ -24,7 +24,7 @@
 | Crate | Version Spec | Locked Version | Features | Purpose |
 |-------|-------------|----------------|----------|---------|
 | teloxide | 0.13 | 0.13.0 | `macros` | Telegram bot framework |
-| reqwest | 0.12 | 0.12.28 | `json`, `multipart`, `stream` | HTTP client (Whisper API, etc.) |
+| reqwest | 0.11 | 0.11.27 | `json`, `multipart`, `stream`, `socks` | HTTP client (Whisper API, etc.) |
 | tokio-stream | 0.1 | — | — | Async stream utilities |
 
 ### Serialization
@@ -60,6 +60,7 @@
 | Crate | Version Spec | Locked Version | Purpose |
 |-------|-------------|----------------|---------|
 | dotenvy | 0.15 | 0.15.7 | `.env` file loading |
+| toml | 0.8 | 0.8.23 | TOML config file parsing |
 
 ### Utilities
 
@@ -86,7 +87,6 @@
 
 | Crate | Pulled By | Locked Version | Notes |
 |-------|-----------|----------------|-------|
-| reqwest | teloxide 0.13 | 0.11.27 | teloxide uses an older reqwest internally; the project also depends on reqwest 0.12 directly. Both versions coexist in the lockfile. |
 | thiserror | teloxide (transitive) | 1.0.69 | Older thiserror 1.x via teloxide; project uses thiserror 2.x directly. Both coexist. |
 
 ## Build Tools
@@ -128,7 +128,7 @@ No Makefile, justfile, `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, or C
 | Rust edition | 2024 | `Cargo.toml` (`edition`) |
 | teloxide | ^0.13 | `Cargo.toml` |
 | tokio | ^1 | `Cargo.toml` |
-| reqwest | ^0.12 | `Cargo.toml` |
+| reqwest | ^0.11 | `Cargo.toml` |
 
 ## Commands
 

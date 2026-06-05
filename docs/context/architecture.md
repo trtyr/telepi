@@ -4,6 +4,7 @@
 
 Telegram bot that bridges user messages to the **Pi coding agent CLI** (`pi`).
 One Rust binary, three runtime modes: `start` (bot), `setup` (interactive config), `status` (diagnostics).
+Deployable as a Docker container or system service (launchd/systemd).
 
 ```
 ┌─────────────┐      Telegram API      ┌──────────────────────────────────┐
@@ -11,13 +12,14 @@ One Rust binary, three runtime modes: `start` (bot), `setup` (interactive config
 │  User(s)     │                        │                                  │
 └─────────────┘                        │  ┌──────────┐  ┌──────────────┐ │
                                         │  │  bot/    │  │  pi/         │ │
-                                        │  │ handler  │─►│ registry     │ │
-                                        │  │ commands │  │ session      │ │
-                                        │  │ state    │  │ cli_session  │ │
-                                        │  │ transport│  └──────┬───────┘ │
-                                        │  │ keyboard │         │         │
-                                        │  └──────────┘         ▼         │
-                                        │               ┌──────────────┐  │
+  ┌──────────┐                         │  │ handler  │─►│ registry     │ │
+  │  inbox/  │──.txt files──►          │  │ commands │  │ session      │ │
+  │  dir     │                         │  │ state    │  │ cli_session  │ │
+  └──────────┘                         │  │ transport│  │ tree         │ │
+                                        │  │ keyboard │  └──────┬───────┘ │
+                                        │  │ prompt_  │         │         │
+                                        │  │  inbox   │         ▼         │
+                                        │  └──────────┘  ┌──────────────┐  │
                                         │               │ pi CLI       │  │
                                         │               │ (json mode)  │  │
                                         │               │ (streaming)  │  │
@@ -33,18 +35,24 @@ One Rust binary, three runtime modes: `start` (bot), `setup` (interactive config
 ├─────────────────────────────────────────────────┤
 │  Bot Layer              bot/                     │  ← teloxide dispatcher, commands
 │    handler  — message endpoints, streaming        │
-│    commands — /start, /new, /sessions, etc.      │
+│    commands — /start, /new, /sessions, /tree etc. │
 │    state    — per-chat busy/idle tracking        │
 │    transport— send/edit/split Telegram messages   │
 │    keyboard — paginated inline keyboards         │
+│    prompt_inbox — filesystem polling for prompts  │
 ├─────────────────────────────────────────────────┤
 │  Session Layer          pi/                      │  ← PiSession trait, registry
 │    registry — HashMap<SessionContext, PiSession>  │
 │    session  — trait + data types + PiEvent enum  │
 │    cli_session — pi CLI subprocess (json mode)   │
+│    tree     — session JSONL tree parsing/renders  │
 ├─────────────────────────────────────────────────┤
 │  Support Layer          config, paths, error,    │  ← shared utilities
 │                         format, install, voice   │
+├─────────────────────────────────────────────────┤
+│  Deployment             Dockerfile,              │  ← container + service
+│                         docker-compose.yml,      │
+│                         telepi.toml, install/    │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -56,14 +64,14 @@ main.rs
   └─► config.rs ──► paths.rs, error.rs
   └─► bot/mod.rs ──► config, pi/registry, bot/*
 
-bot/mod.rs ──► bot/handler, bot/commands, bot/state, config, pi/registry
+bot/mod.rs ──► bot/handler, bot/commands, bot/state, bot/prompt_inbox, config, pi/registry
 bot/handler.rs ──► bot/state, bot/transport, config, format, pi/registry, pi/session (PiEvent)
 bot/commands/mod.rs ──► bot/handler (HandlerState)
 bot/commands/sessions.rs ──► bot/handler (HandlerState), bot/state
-bot/commands/basic.rs ──► bot/handler, config  [dead code — unused by dispatch()]
 bot/commands/context.rs ──► bot/handler (HandlerState)
 bot/commands/model.rs ──► bot/handler (HandlerState)
-bot/commands/tree.rs ──► bot/handler (HandlerState)
+bot/commands/tree.rs ──► bot/handler (HandlerState), pi/tree
+bot/prompt_inbox.rs ──► bot/handler (HandlerState), bot/state, config
 bot/state.rs ──► pi/session (SessionContext)
 bot/transport.rs ──► teloxide only
 bot/keyboard.rs ──► teloxide only
@@ -71,6 +79,7 @@ bot/keyboard.rs ──► teloxide only
 pi/registry.rs ──► config, error, pi/session, pi/cli_session
 pi/cli_session.rs ──► config, error, pi/session
 pi/session.rs ──► (pure trait + types, no internal deps)
+pi/tree.rs ──► error (serde, std::path)
 
 install/mod.rs ──► paths, install/platform, install/launchd, install/systemd
 install/platform.rs ──► (pure types)
@@ -111,6 +120,7 @@ error.rs ──► thiserror, anyhow, teloxide
    ├─ bot.send_message("🤔 Thinking...")
    ├─ create mpsc::channel::<PiEvent>(256)
    ├─ spawn tokio task for streaming edits (1.5s debounce)
+   │      ├─ ThinkingDelta → (suppressed, too noisy for Telegram)
    │      ├─ TextDelta → accumulate + debounced edit ("🔄" indicator)
    │      ├─ ToolStart → show "🔧 <tool_name>..."
    │      ├─ ToolEnd → restore to accumulated text
@@ -124,6 +134,24 @@ error.rs ──► thiserror, anyhow, teloxide
    └─ format::escape_html(response) → transport::edit_text(final)
 
 5. state.end_processing(key)
+```
+
+### Prompt Inbox Flow (filesystem polling)
+
+```
+1. bot/mod.rs::run() calls prompt_inbox::start_prompt_inbox_polling()
+       │
+2. Spawns background tokio task polling every `config.prompt_inbox_interval_ms`
+       │
+3. Each tick: poll_inbox_once(inbox_dir, state)
+   ├─ scan directory for .txt files
+   ├─ sort by mtime, pick oldest non-empty file
+   ├─ check busy guard for "inbox" chat key
+   ├─ state.begin_processing("inbox", content)
+   ├─ sessions.get_or_create("inbox" context)
+   ├─ session.prompt(content)  ← non-streaming, fire-and-forget
+   ├─ state.end_processing("inbox")
+   └─ delete processed .txt file
 ```
 
 ### Voice Flow
@@ -163,8 +191,13 @@ error.rs ──► thiserror, anyhow, teloxide
 | Chat busy guard | `BotChatState` with `Arc<Mutex<>>` | Prevents concurrent prompts per chat (Pi CLI is single-threaded) |
 | Process abort | SIGTERM via `libc::kill` (Unix) | Graceful termination of running `pi` subprocess |
 | Message splitting | `transport::split_text` at 4096 chars, newline-aware | Telegram API limit compliance |
-| Config resolution | `TELEPI_CONFIG` → .env (cwd) → ~/.config/telepi/.env | Docker-friendly, explicit override path |
+| Config resolution | `telepi.toml` → env vars → .env | TOML as primary config; env vars override; `.env` as fallback |
 | Voice backends | Priority: Parakeet > Sherpa-ONNX > OpenAI Whisper | Local-first, cloud fallback |
+| Prompt inbox | Filesystem polling with configurable interval | External tools inject prompts by writing .txt files |
+| Containerization | Multi-stage Docker build (rust:1.85-slim → debian:bookworm-slim) | Small runtime image, non-root user, volume mounts for config/sessions |
+| 409 Conflict retry | Loop with 5 retries, 3s delay | Handles stale webhook or concurrent polling instances |
+| Process cleanup | `kill_existing_processes()` on start | Kills previous telepi + orphan `pi --mode json` children before polling |
+| Conversation tree | `pi/tree.rs` parses session JSONL into `TreeNode` graph | Enables /tree command to visualize Pi session history |
 
 ## PiSession Trait Interface
 
@@ -196,6 +229,7 @@ pi --mode json --print <text>
     │     ├─ ThinkingDelta        → PiEvent::ThinkingDelta
     │     ├─ TextDelta            → accumulate + PiEvent::TextDelta
     │     ├─ ToolStart            → PiEvent::ToolStart
+    │     ├─ ToolOutput           → PiEvent::ToolOutput
     │     ├─ ToolEnd              → PiEvent::ToolEnd
     │     └─ (others)             → (ignored)
     ├─ JsonEvent::MessageEnd      → extract usage (tokens, cost)
@@ -213,10 +247,11 @@ pi --mode json --print <text>
 | Voice: OpenAI Whisper | Working | Uses `OPENAI_API_KEY`, multipart upload |
 | Photo handler | Working | Downloads image, calls `prompt_with_images()` |
 | Abort | Working (Unix) | Sends SIGTERM to child process PID |
+| /tree | Working | Parses session JSONL, renders tree via `pi/tree.rs` |
+| /branch | Stub | "coming soon" — would navigate tree entries |
+| /label | Stub | "coming soon" — would label tree entries |
+| Prompt inbox | Working | Polls directory for .txt files, processes as prompts |
 | Stats | Stub | Returns zeros (TODO: parse session JSONL) |
 | set_model | Stub | No-op (TODO: persist selection) |
-| /tree, /branch, /label | Stubs | "not yet implemented" messages |
-| commands::basic.rs | Dead code | `cmd_start`/`cmd_help` defined but `dispatch()` uses inline `send_welcome()` |
-| Prompt inbox | Configured but unused | `prompt_inbox_dir` / `prompt_inbox_interval_ms` in config, no watcher |
 | setup command | Stub | Prints manual instructions |
 | Service running check | Stub | `running: false` hardcoded in `get_status()` |
