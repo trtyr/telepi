@@ -1,8 +1,7 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, MessageId};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -11,6 +10,7 @@ use crate::bot::transport;
 use crate::config::TelePiConfig;
 use crate::format::escape_html;
 use crate::pi::registry::SessionRegistry;
+use crate::error::to_friendly_error;
 use crate::pi::session::PiEvent;
 
 /// Shared state passed to all handlers.
@@ -19,6 +19,31 @@ pub struct HandlerState {
     pub config: Arc<TelePiConfig>,
     pub sessions: SessionRegistry,
     pub chat_state: BotChatState,
+    /// Model lists cached per chat for callback handling.
+    pub model_lists: Arc<tokio::sync::Mutex<HashMap<ChatKey, Vec<crate::pi::cli_session::ModelInfo>>>>,
+}
+
+impl HandlerState {
+    pub async fn set_model_list(
+        &self,
+        chat_id: teloxide::types::ChatId,
+        thread_id: Option<teloxide::types::ThreadId>,
+        models: Vec<crate::pi::cli_session::ModelInfo>,
+    ) {
+        let key = state::chat_key(chat_id.0, thread_id);
+        let mut lists = self.model_lists.lock().await;
+        lists.insert(key, models);
+    }
+
+    pub async fn get_model_list(
+        &self,
+        chat_id: teloxide::types::ChatId,
+        thread_id: Option<teloxide::types::ThreadId>,
+    ) -> Option<Vec<crate::pi::cli_session::ModelInfo>> {
+        let key = state::chat_key(chat_id.0, thread_id);
+        let lists = self.model_lists.lock().await;
+        lists.get(&key).cloned()
+    }
 }
 
 /// Teloxide endpoint: handle plain text messages (not commands).
@@ -56,7 +81,7 @@ pub async fn text_handler(bot: Bot, msg: Message, state: HandlerState) -> Respon
 
     if let Err(e) = result {
         error!(error = %e, "failed to process prompt");
-        bot.send_message(msg.chat.id, format!("❌ Error: {e}"))
+        bot.send_message(msg.chat.id, format!("❌ {}", to_friendly_error(&e)))
             .await
             .ok();
     }
@@ -135,8 +160,8 @@ pub async fn voice_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
     match crate::voice::transcribe(&ogg_path).await {
         Ok(transcript) => {
             info!(len = transcript.text.len(), "transcription complete");
-            let preview = if transcript.text.len() > 100 {
-                format!("{}...", &transcript.text[..100])
+            let preview = if transcript.text.chars().count() > 100 {
+                format!("{}...", transcript.text.chars().take(100).collect::<String>())
             } else {
                 transcript.text.clone()
             };
@@ -155,7 +180,7 @@ pub async fn voice_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
 
             if let Err(e) = result {
                 error!(error = %e, "failed to process voice prompt");
-                bot.send_message(msg.chat.id, format!("❌ Error: {e}"))
+                bot.send_message(msg.chat.id, format!("❌ {}", to_friendly_error(&e)))
                     .await.ok();
             }
         }
@@ -281,7 +306,7 @@ pub async fn photo_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
         }
         Err(e) => {
             error!(error = %e, "failed to process image prompt");
-            bot.send_message(msg.chat.id, format!("❌ Error: {e}"))
+            bot.send_message(msg.chat.id, format!("❌ {}", to_friendly_error(&e)))
                 .await.ok();
         }
     }
@@ -317,7 +342,7 @@ async fn process_prompt(
         let mut last_edit_time = std::time::Instant::now();
         let mut last_edit_text = String::new();
         let debounce_ms = 1500; // Edit at most every 1.5s
-        let mut current_tool: Option<String> = None;
+        let mut _current_tool: Option<String> = None;
         let mut tool_output_lines: Vec<String> = Vec::new();
 
         while let Some(event) = rx.recv().await {
@@ -344,7 +369,7 @@ async fn process_prompt(
                     }
                 }
                 PiEvent::ToolStart { tool_name, .. } => {
-                    current_tool = Some(tool_name.clone());
+                    _current_tool = Some(tool_name.clone());
                     tool_output_lines.clear();
 
                     // Show tool call indicator
@@ -362,7 +387,7 @@ async fn process_prompt(
                     last_edit_time = std::time::Instant::now();
                 }
                 PiEvent::ToolEnd { .. } => {
-                    current_tool = None;
+                    _current_tool = None;
                     tool_output_lines.clear();
 
                     // Restore to accumulated text
@@ -457,7 +482,7 @@ pub async fn retry_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
 
     if let Err(e) = result {
         error!(error = %e, "retry failed");
-        bot.send_message(msg.chat.id, format!("❌ Retry error: {e}"))
+        bot.send_message(msg.chat.id, format!("❌ {}", to_friendly_error(&e)))
             .await
             .ok();
     }

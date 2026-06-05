@@ -1,1 +1,23 @@
 /target
+
+# Config files with secrets
+telepi.toml
+.env
+*.local.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Temp files
+/tmp/
+null

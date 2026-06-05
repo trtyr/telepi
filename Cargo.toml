@@ -22,7 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTTP client (for OpenAI Whisper, etc.)
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { version = "0.11", features = ["json", "multipart", "stream", "socks"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -37,20 +37,17 @@ thiserror = "2"
 
 # Config
 dotenvy = "0.15"
+toml = "0.8"
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 which = "7"
-glob = "0.3"
-sha2 = "0.10"
-base64 = "0.22"
+
 dirs = "6"
 libc = "0.2"
-tokio-stream = "0.1"
 async-trait = "0.1"
-tracing-appender = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

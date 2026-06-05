@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -23,7 +24,7 @@ pub struct CliSession {
     session_path: PathBuf,
     workspace: PathBuf,
     session_id: String,
-    model: Option<String>,
+    model: Mutex<Option<String>>,
     /// Handle to the currently running child process (for abort).
     running_child: Arc<Mutex<Option<Child>>>,
 }
@@ -41,6 +42,7 @@ impl std::fmt::Debug for CliSession {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 enum JsonEvent {
     #[serde(rename = "session")]
     Session { id: Option<String> },
@@ -57,13 +59,14 @@ enum JsonEvent {
     #[serde(rename = "message_end")]
     MessageEnd { message: JsonMessage },
     #[serde(rename = "message_update")]
-    MessageUpdate { assistant_message_event: Option<AssistantMessageEvent> },
+    MessageUpdate { #[serde(rename = "assistantMessageEvent")] assistant_message_event: Option<AssistantMessageEvent> },
     /// Catch-all for unknown events.
     #[serde(other)]
     Unknown,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonMessage {
     role: Option<String>,
     content: Option<serde_json::Value>,
@@ -75,6 +78,8 @@ struct JsonMessage {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct JsonUsage {
     input: Option<u64>,
     output: Option<u64>,
@@ -86,12 +91,14 @@ struct JsonUsage {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonCost {
     total: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[allow(dead_code)]
 enum AssistantMessageEvent {
     #[serde(rename = "thinking_start")]
     ThinkingStart { content_index: Option<u32>, partial: Option<JsonMessage> },
@@ -135,12 +142,55 @@ enum AssistantMessageEvent {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct ToolCallInfo {
     name: Option<String>,
     #[serde(rename = "toolCallId")]
     tool_call_id: Option<String>,
 }
 
+/// Information about an available AI model.
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub model: String,
+    pub context_window: String,
+    pub max_output: String,
+    pub supports_thinking: bool,
+    pub supports_images: bool,
+}
+
+impl std::fmt::Display for ModelInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.provider, self.model)
+    }
+}
+
+/// Parse the output of `pi --list-models`.
+fn parse_model_list(output: &str) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
+    for line in output.lines().skip(1) {
+        // Skip header line
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Split by whitespace — the format is fixed-width columns
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 6 {
+            models.push(ModelInfo {
+                provider: parts[0].to_string(),
+                model: parts[1].to_string(),
+                context_window: parts[2].to_string(),
+                max_output: parts[3].to_string(),
+                supports_thinking: parts[4] == "yes",
+                supports_images: parts[5] == "yes",
+            });
+        }
+    }
+    models
+}
 impl CliSession {
     /// Create a new CLI-backed Pi session.
     pub async fn create(
@@ -175,7 +225,7 @@ impl CliSession {
             session_path,
             workspace,
             session_id,
-            model: None,
+            model: Mutex::new(None),
             running_child: Arc::new(Mutex::new(None)),
         })
     }
@@ -185,24 +235,23 @@ impl CliSession {
         which::which("pi").is_ok()
     }
 
-    /// Build the base `pi` command with common arguments.
-    fn base_command(&self) -> Result<Command> {
-        let pi_bin = which::which("pi")
-            .map_err(|_| TelePiError::PiProcess("`pi` CLI not found on PATH".into()))?;
+    /// List available models from `pi --list-models`.
+    pub async fn list_models() -> Result<Vec<ModelInfo>> {
+        let output = tokio::process::Command::new("pi")
+            .arg("--list-models")
+            .output()
+            .await
+            .map_err(|e| TelePiError::PiProcess(format!("failed to run pi --list-models: {e}")))?;
 
-        let mut cmd = Command::new(&pi_bin);
-        cmd.current_dir(&self.workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("PI_SESSION_PATH", &self.session_path);
-
-        if let Some(ref model) = self.model {
-            cmd.env("PI_MODEL", model);
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TelePiError::PiProcess(format!("pi --list-models failed: {stderr}")));
         }
 
-        Ok(cmd)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let models = parse_model_list(&stdout);
+        Ok(models)
     }
-
     /// Execute a streaming prompt, parsing JSON events line by line.
     async fn execute_streaming(
         &self,
@@ -225,15 +274,16 @@ impl CliSession {
             .stderr(Stdio::piped())
             .env("PI_SESSION_PATH", &self.session_path);
 
-        if let Some(ref model) = self.model {
-            cmd.env("PI_MODEL", model);
+        let model_guard = self.model.lock().await.clone();
+        if let Some(ref m) = model_guard {
+            cmd.env("PI_MODEL", m);
         }
 
-        let mut child = cmd.spawn()
+        let child = cmd.spawn()
             .map_err(|e| TelePiError::PiProcess(format!("failed to spawn pi: {e}")))?;
 
         // Store the child PID for abort support
-        let child_id = child.id();
+        let _child_id = child.id();
         {
             let mut running = self.running_child.lock().await;
             *running = Some(child);
@@ -244,19 +294,21 @@ impl CliSession {
             let mut running = self.running_child.lock().await;
             running.as_mut().and_then(|c| c.stdout.take())
         };
-        let stderr = {
+        let _stderr = {
             let mut running = self.running_child.lock().await;
             running.as_mut().and_then(|c| c.stderr.take())
         };
 
         let stdout = stdout.ok_or_else(|| TelePiError::PiProcess("no stdout from pi".into()))?;
 
-        // Read JSON events line by line
-        let mut accumulated_text = String::new();
-        let mut tokens_in: u64 = 0;
-        let mut tokens_out: u64 = 0;
-        let mut cost: f64 = 0.0;
-        let mut model_name = String::new();
+        // Wrap the entire streaming + wait in a 10-minute timeout
+        let timeout_result = tokio::time::timeout(Duration::from_secs(600), async {
+            // Read JSON events line by line
+            let mut accumulated_text = String::new();
+            let mut tokens_in: u64 = 0;
+            let mut tokens_out: u64 = 0;
+            let mut cost: f64 = 0.0;
+            let model_name = String::new();
 
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -290,7 +342,7 @@ impl CliSession {
                                         tool_call_id: id,
                                     }).await.ok();
                                 }
-                                AssistantMessageEvent::ToolEnd { tool_call_id, is_error, .. } => {
+                                AssistantMessageEvent::ToolEnd { tool_call_id, is_error: _, .. } => {
                                     let id = tool_call_id.unwrap_or_else(|| "unknown".into());
                                     tx.send(PiEvent::ToolEnd {
                                         tool_call_id: id,
@@ -387,10 +439,36 @@ impl CliSession {
             text: accumulated_text.clone(),
         }).await.ok();
 
-        Ok(PromptResponse {
-            text: accumulated_text,
-            tool_calls: vec![],
-        })
+        info!(
+            text_len = accumulated_text.len(),
+            tokens_in,
+            tokens_out,
+            "streaming complete"
+        );
+
+            Ok(PromptResponse {
+                text: accumulated_text,
+                tool_calls: vec![],
+            })
+        }).await;
+
+        match timeout_result {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                warn!(
+                    session_id = %self.session_id,
+                    "pi process timed out after 600s, killing"
+                );
+                let mut running = self.running_child.lock().await;
+                if let Some(ref mut child) = *running {
+                    child.kill().await.ok();
+                }
+                *running = None;
+                Err(TelePiError::PiProcess(
+                    "pi process timed out after 10 minutes".into()
+                ))
+            }
+        }
     }
 }
 
@@ -401,7 +479,7 @@ impl PiSession for CliSession {
             session_id: self.session_id.clone(),
             session_path: self.session_path.clone(),
             workspace: self.workspace.clone(),
-            model: self.model.clone(),
+            model: self.model.try_lock().ok().and_then(|g| g.clone()),
             session_name: None,
         }
     }
@@ -477,8 +555,10 @@ impl PiSession for CliSession {
         Ok(())
     }
 
-    async fn set_model(&self, _model: &str) -> Result<()> {
-        // TODO: Persist model selection
+    async fn set_model(&self, model: &str) -> Result<()> {
+        let mut guard = self.model.lock().await;
+        *guard = Some(model.to_string());
+        info!(model = model, "model set");
         Ok(())
     }
 
