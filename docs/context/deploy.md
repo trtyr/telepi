@@ -78,7 +78,14 @@ cp .env.example .env && vim .env
 
 ## CI
 
-**None configured.** No `.github/workflows/`, no Dockerfile, no Makefile.
+**None configured.** No `.github/workflows/`, no Makefile.
+
+Docker support is available via `Dockerfile` (multi-stage build) and `docker-compose.yml`:
+
+```bash
+docker build -t telepi .
+docker compose up -d
+```
 
 ## Service Installation
 
