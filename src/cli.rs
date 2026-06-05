@@ -23,4 +23,19 @@ pub enum Commands {
     },
     /// Show installed-mode status
     Status,
+    /// Manage the background gateway service
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GatewayCommand {
+    /// Install and start the gateway service
+    Start,
+    /// Stop the gateway service
+    Stop,
+    /// Restart the gateway service
+    Restart,
 }
