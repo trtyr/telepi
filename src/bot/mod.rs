@@ -23,21 +23,18 @@ const CONFLICT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs
 
 /// Build and run the Telegram bot.
 pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
-    // Build shared HTTP client with timeouts and proxy (used by both Bot and handlers)
-    let http_builder = reqwest::Client::builder()
+    // Build shared HTTP client with timeouts and proxy
+    let mut http_builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(120));
-    let http_builder = if let Some(ref proxy) = config.proxy {
+    if let Some(ref proxy) = config.proxy {
         match reqwest::Proxy::all(proxy) {
-            Ok(p) => http_builder.proxy(p),
+            Ok(p) => { http_builder = http_builder.proxy(p); }
             Err(e) => {
                 warn!(proxy = %proxy, error = %e, "invalid proxy, ignoring");
-                http_builder
             }
         }
-    } else {
-        http_builder
-    };
+    }
     let http_client = http_builder.build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -45,13 +42,35 @@ pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
     let bot = Bot::with_client(&config.telegram_bot_token, http_client.clone());
     let config = Arc::new(config);
 
-    // Clear any stale webhook to prevent 409 conflicts
-    bot.delete_webhook().send().await?;
-    info!("cleared existing webhook");
+    // Startup: retry until Telegram is reachable (network/proxy may be temporarily down)
+    {
+        use std::time::Duration;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let result = async {
+                bot.delete_webhook().send().await?;
+                info!("cleared existing webhook");
+                commands::register_menu(&bot).await?;
+                info!("registered telegram bot commands");
+                Ok::<(), anyhow::Error>(())
+            }.await;
 
-    // Register commands in Telegram menu
-    commands::register_menu(&bot).await?;
-    info!("registered telegram bot commands");
+            match result {
+                Ok(()) => break,
+                Err(e) => {
+                    let delay = Duration::from_secs(4u64.saturating_pow(attempt.min(6)));
+                    warn!(
+                        error = %e,
+                        attempt = attempt,
+                        retry_in = %format!("{}s", delay.as_secs()),
+                        "startup failed, retrying..."
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
 
     let sessions = SessionRegistry::new(config.clone());
     let chat_state = state::BotChatState::new();

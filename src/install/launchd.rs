@@ -28,6 +28,8 @@ pub fn build_plist(
     <dict>
         <key>TELEPI_CONFIG</key>
         <string>{config}</string>
+        <key>PATH</key>
+        <string>{path}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -46,6 +48,7 @@ pub fn build_plist(
         label = LABEL,
         bin = telepi_bin,
         config = config_path,
+        path = std::env::var("PATH").unwrap_or_default(),
         out_log = out_log,
         err_log = err_log,
     )
