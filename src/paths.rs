@@ -34,9 +34,9 @@ pub fn default_config_dir() -> PathBuf {
     home_dir().join(".config").join("telepi")
 }
 
-/// Default config file path: `~/.config/telepi/.env`
+/// Default config file path: `~/.config/telepi/config.toml`
 pub fn default_config_path() -> PathBuf {
-    default_config_dir().join(".env")
+    default_config_dir().join("config.toml")
 }
 
 /// Default systemd user unit directory: `~/.config/systemd/user/`

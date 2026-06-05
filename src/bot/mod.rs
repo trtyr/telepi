@@ -1,23 +1,34 @@
 pub mod commands;
 pub mod handler;
 pub mod keyboard;
+pub mod prompt_inbox;
 pub mod state;
 pub mod transport;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use teloxide::prelude::*;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::TelePiConfig;
 use crate::pi::registry::SessionRegistry;
 
 use handler::HandlerState;
 
+/// Maximum retry attempts for 409 Conflict.
+const MAX_CONFLICT_RETRIES: u32 = 5;
+/// Delay between retry attempts.
+const CONFLICT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Build and run the Telegram bot.
 pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
     let bot = Bot::new(&config.telegram_bot_token);
     let config = Arc::new(config);
+
+    // Clear any stale webhook to prevent 409 conflicts
+    bot.delete_webhook().send().await?;
+    info!("cleared existing webhook");
 
     // Register commands in Telegram menu
     commands::register_menu(&bot).await?;
@@ -30,11 +41,10 @@ pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
         config: config.clone(),
         sessions,
         chat_state,
+        model_lists: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
-    info!("bot starting polling");
-
-    let handler = Update::filter_message()
+    let message_handler = Update::filter_message()
         .branch(
             dptree::entry()
                 .filter_command::<commands::Command>()
@@ -53,12 +63,43 @@ pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
                 .endpoint(handler::text_handler),
         );
 
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![handler_state])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+    let callback_handler = Update::filter_callback_query()
+        .endpoint(commands::model::handle_model_callback);
+
+    let handler = dptree::entry()
+        .branch(message_handler)
+        .branch(callback_handler);
+    // Start prompt inbox polling if configured
+    let _inbox_handle = prompt_inbox::start_prompt_inbox_polling(
+        config.clone(),
+        handler_state.clone(),
+    );
+    // Retry loop for 409 Conflict (another bot instance polling)
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        info!(attempt, "starting bot polling");
+
+        let mut dispatcher = Dispatcher::builder(bot.clone(), handler.clone())
+            .dependencies(dptree::deps![handler_state.clone()])
+            .enable_ctrlc_handler()
+            .build();
+
+        dispatcher.dispatch().await;
+
+        // If we reach here, polling stopped. Check if we should retry.
+        if attempt >= MAX_CONFLICT_RETRIES {
+            warn!(attempts = attempt, "polling stopped after max retries");
+            break;
+        }
+
+        info!(
+            attempt,
+            delay_secs = CONFLICT_RETRY_DELAY.as_secs(),
+            "polling stopped, retrying after delay"
+        );
+        tokio::time::sleep(CONFLICT_RETRY_DELAY).await;
+    }
 
     Ok(())
 }

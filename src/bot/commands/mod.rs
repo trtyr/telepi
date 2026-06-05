@@ -68,7 +68,7 @@ pub async fn dispatch(bot: Bot, msg: Message, cmd: Command, state: HandlerState)
                 bot.send_message(msg.chat.id, "⛔ You are not authorized.").await?;
                 return Ok(());
             }
-            send_welcome(&bot, &msg).await?;
+            send_welcome(&bot, &msg, &state).await?;
         }
         Command::New => sessions::cmd_new(bot, msg, state).await?,
         Command::Sessions => sessions::cmd_sessions(bot, msg, state).await?,
@@ -86,22 +86,37 @@ pub async fn dispatch(bot: Bot, msg: Message, cmd: Command, state: HandlerState)
     Ok(())
 }
 
-/// Send the welcome / help message.
-async fn send_welcome(bot: &Bot, msg: &Message) -> ResponseResult<()> {
-    let text = concat!(
-        "👋 <b>Welcome to TelePi</b>\n\n",
-        "Telegram bridge for the Pi coding agent.\n\n",
-        "<b>Commands:</b>\n",
-        "/new — Create a new session\n",
-        "/sessions — List and switch sessions\n",
-        "/handback — Resume session in terminal\n",
-        "/model — Switch AI model\n",
-        "/tree — View conversation tree\n",
-        "/context — Show context window usage\n",
-        "/retry — Re-send last prompt\n",
-        "/abort — Cancel running operation\n",
-        "/help — Show this message\n\n",
-        "Send me a text message, voice note, or photo to interact with Pi.",
+/// Send the welcome / help message with current session info.
+async fn send_welcome(bot: &Bot, msg: &Message, state: &HandlerState) -> ResponseResult<()> {
+    let mut text = String::from(
+        "👋 <b>Welcome to TelePi</b>\n\n\
+         Telegram bridge for the Pi coding agent.\n\n"
+    );
+
+    // Show current session info if exists
+    let ctx = crate::bot::state::chat_key_to_context(
+        &crate::bot::state::chat_key(msg.chat.id.0, msg.thread_id.clone())
+    );
+    if let Ok(session) = state.sessions.get_or_create(&ctx).await {
+        let info = session.info();
+        text.push_str(&format!(
+            "📌 <b>Current session:</b> <code>{}</code>\n\n",
+            info.session_id
+        ));
+    }
+
+    text.push_str(
+        "<b>Commands:</b>\n\
+         /new — Create a new session\n\
+         /sessions — List and switch sessions\n\
+         /handback — Resume session in terminal\n\
+         /model — Switch AI model\n\
+         /tree — View conversation tree\n\
+         /context — Show context window usage\n\
+         /retry — Re-send last prompt\n\
+         /abort — Cancel running operation\n\
+         /help — Show this message\n\n\
+         Send me a text message, voice note, or photo to interact with Pi."
     );
 
     bot.send_message(msg.chat.id, text)

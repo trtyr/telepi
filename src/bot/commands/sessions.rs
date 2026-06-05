@@ -12,9 +12,9 @@ pub async fn cmd_new(bot: Bot, msg: Message, state: HandlerState) -> ResponseRes
             let info = session.info();
             bot.send_message(
                 msg.chat.id,
-                format!("✅ New session created.\nWorkspace: `{}`", info.workspace.display()),
+                format!("✅ New session created.\nWorkspace: <code>{}</code>", info.workspace.display()),
             )
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+            .parse_mode(teloxide::types::ParseMode::Html)
             .await?;
         }
         Err(e) => {
