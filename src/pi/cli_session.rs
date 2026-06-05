@@ -500,6 +500,8 @@ impl PiSession for CliSession {
         let args = vec![
             "--mode".to_string(), "json".to_string(),
             "--print".to_string(),
+            "--session".to_string(), self.session_path.display().to_string(),
+            "--continue".to_string(),
             text.to_string(),
         ];
         self.execute_streaming(args, &tx).await
@@ -516,6 +518,8 @@ impl PiSession for CliSession {
         let mut args = vec![
             "--mode".to_string(), "json".to_string(),
             "--print".to_string(),
+            "--session".to_string(), self.session_path.display().to_string(),
+            "--continue".to_string(),
         ];
         for img in images {
             args.push(format!("@{}", img.display()));
@@ -533,6 +537,8 @@ impl PiSession for CliSession {
         let args = vec![
             "--mode".to_string(), "json".to_string(),
             "--print".to_string(),
+            "--session".to_string(), self.session_path.display().to_string(),
+            "--continue".to_string(),
             text.to_string(),
         ];
         self.execute_streaming(args, &tx).await
