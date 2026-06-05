@@ -37,10 +37,29 @@ pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
     let sessions = SessionRegistry::new(config.clone());
     let chat_state = state::BotChatState::new();
 
+    // Build shared HTTP client with timeouts and proxy
+    let http_builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120));
+    let http_builder = if let Some(ref proxy) = config.proxy {
+        match reqwest::Proxy::all(proxy) {
+            Ok(p) => http_builder.proxy(p),
+            Err(e) => {
+                warn!(proxy = %proxy, error = %e, "invalid proxy, ignoring");
+                http_builder
+            }
+        }
+    } else {
+        http_builder
+    };
+    let http_client = http_builder.build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
     let handler_state = HandlerState {
         config: config.clone(),
         sessions,
         chat_state,
+        http: http_client,
         model_lists: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 

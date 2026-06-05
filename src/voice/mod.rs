@@ -87,7 +87,11 @@ async fn transcribe_openai(file_path: &Path) -> Result<TranscriptionResult> {
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| TelePiError::Voice("OPENAI_API_KEY not set".into()))?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
 
     let file_bytes = tokio::fs::read(file_path).await?;
     let file_name = file_path

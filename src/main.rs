@@ -41,14 +41,8 @@ fn main() -> anyhow::Result<()> {
             // Clean up any previous instances
             kill_existing_processes();
 
-            // Apply proxy from config — must happen before reqwest reads env
-            if let Some(proxy) = &cfg.proxy {
-                // SAFETY: single-threaded before tokio runtime starts
-                unsafe {
-                    std::env::set_var("HTTP_PROXY", proxy);
-                    std::env::set_var("HTTPS_PROXY", proxy);
-                }
-            }
+            // Proxy is now configured on reqwest::Client in bot/mod.rs
+            // No need to set env vars
 
             // Build tokio runtime
             let rt = tokio::runtime::Builder::new_multi_thread()

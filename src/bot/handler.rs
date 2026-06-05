@@ -19,6 +19,8 @@ pub struct HandlerState {
     pub config: Arc<TelePiConfig>,
     pub sessions: SessionRegistry,
     pub chat_state: BotChatState,
+    /// Shared HTTP client with timeouts and proxy configured.
+    pub http: reqwest::Client,
     /// Model lists cached per chat for callback handling.
     pub model_lists: Arc<tokio::sync::Mutex<HashMap<ChatKey, Vec<crate::pi::cli_session::ModelInfo>>>>,
 }
@@ -89,6 +91,35 @@ pub async fn text_handler(bot: Bot, msg: Message, state: HandlerState) -> Respon
     Ok(())
 }
 
+/// Download a URL with retry and exponential backoff.
+async fn download_with_retry(client: &reqwest::Client, url: &str) -> crate::error::Result<Vec<u8>> {
+    const MAX_RETRIES: u32 = 3;
+    const BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match client.get(url).send().await {
+            Ok(resp) => match resp.bytes().await {
+                Ok(b) => return Ok(b.to_vec()),
+                Err(e) => {
+                    last_err = Some(e.into());
+                }
+            },
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+
+        if attempt < MAX_RETRIES - 1 {
+            let delay = BASE_DELAY * (attempt + 1);
+            tracing::warn!(attempt = attempt + 1, delay = ?delay, "download failed, retrying...");
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(last_err.unwrap())
+}
+
 /// Teloxide endpoint: handle voice/audio messages.
 pub async fn voice_handler(bot: Bot, msg: Message, state: HandlerState) -> ResponseResult<()> {
     let Some(user) = &msg.from else {
@@ -130,16 +161,8 @@ pub async fn voice_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
     let path = tg_file.path;
     let url = format!("https://api.telegram.org/file/bot{}/{}", &state.config.telegram_bot_token, path);
 
-    let client = reqwest::Client::new();
-    let resp = match client.get(&url).send().await {
-        Ok(r) => match r.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
-                state.chat_state.end_transcribing(&key).await;
-                transport::edit_text(&bot, msg.chat.id, status_msg.id, &format!("❌ Download failed: {e}")).await.ok();
-                return Ok(());
-            }
-        },
+    let resp = match download_with_retry(&state.http, &url).await {
+        Ok(b) => b,
         Err(e) => {
             state.chat_state.end_transcribing(&key).await;
             transport::edit_text(&bot, msg.chat.id, status_msg.id, &format!("❌ Download failed: {e}")).await.ok();
@@ -250,16 +273,8 @@ pub async fn photo_handler(bot: Bot, msg: Message, state: HandlerState) -> Respo
     let path = tg_file.path;
     let url = format!("https://api.telegram.org/file/bot{}/{}", &state.config.telegram_bot_token, path);
 
-    let client = reqwest::Client::new();
-    let resp = match client.get(&url).send().await {
-        Ok(r) => match r.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
-                state.chat_state.end_processing(&key).await;
-                transport::edit_text(&bot, msg.chat.id, status_msg.id, &format!("❌ Download failed: {e}")).await.ok();
-                return Ok(());
-            }
-        },
+    let resp = match download_with_retry(&state.http, &url).await {
+        Ok(b) => b,
         Err(e) => {
             state.chat_state.end_processing(&key).await;
             transport::edit_text(&bot, msg.chat.id, status_msg.id, &format!("❌ Download failed: {e}")).await.ok();
