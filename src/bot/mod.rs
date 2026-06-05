@@ -23,21 +23,7 @@ const CONFLICT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs
 
 /// Build and run the Telegram bot.
 pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
-    let bot = Bot::new(&config.telegram_bot_token);
-    let config = Arc::new(config);
-
-    // Clear any stale webhook to prevent 409 conflicts
-    bot.delete_webhook().send().await?;
-    info!("cleared existing webhook");
-
-    // Register commands in Telegram menu
-    commands::register_menu(&bot).await?;
-    info!("registered telegram bot commands");
-
-    let sessions = SessionRegistry::new(config.clone());
-    let chat_state = state::BotChatState::new();
-
-    // Build shared HTTP client with timeouts and proxy
+    // Build shared HTTP client with timeouts and proxy (used by both Bot and handlers)
     let http_builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(120));
@@ -54,6 +40,21 @@ pub async fn run(config: TelePiConfig) -> anyhow::Result<()> {
     };
     let http_client = http_builder.build()
         .unwrap_or_else(|_| reqwest::Client::new());
+
+    // Bot uses the same proxy-aware client
+    let bot = Bot::with_client(&config.telegram_bot_token, http_client.clone());
+    let config = Arc::new(config);
+
+    // Clear any stale webhook to prevent 409 conflicts
+    bot.delete_webhook().send().await?;
+    info!("cleared existing webhook");
+
+    // Register commands in Telegram menu
+    commands::register_menu(&bot).await?;
+    info!("registered telegram bot commands");
+
+    let sessions = SessionRegistry::new(config.clone());
+    let chat_state = state::BotChatState::new();
 
     let handler_state = HandlerState {
         config: config.clone(),
